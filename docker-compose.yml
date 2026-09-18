@@ -1,0 +1,84 @@
+volumes:
+  minio-data:
+
+services:
+  backend:
+    image: artisera-backend/backend
+    build:
+      context: ./backend
+      target: dev
+    restart: unless-stopped
+    command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && python manage.py runserver 0.0.0.0:4000"
+    ports:
+      - 4000:4000
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/code
+      - ./backend/uploads:/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      minio-client:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 949M
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - 9000:9000
+      - 9001:9001
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 949M
+
+  minio-client:
+    image: minio/mc:latest
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 minio minio123;
+      /usr/bin/mc mb --quiet local/artisera/;
+      /usr/bin/mc anonymous set public local/artisera;
+      "
+    depends_on:
+      - minio
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - 6379:6379
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  celery:
+    image: artisera-backend/backend
+    build:
+      context: ./backend
+      target: dev
+    restart: unless-stopped
+    command: celery -A backend worker --loglevel=info
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/code
+      - ./backend/uploads:/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          memory: 512M
