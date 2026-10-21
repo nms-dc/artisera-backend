@@ -1,3 +1,4 @@
+
 volumes:
   minio-data:
 
@@ -8,9 +9,12 @@ services:
       context: ./backend
       target: dev
     restart: unless-stopped
-    command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && python manage.py runserver 0.0.0.0:4000"
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             python manage.py runserver 0.0.0.0:4000"
     ports:
-      - 4000:4000
+      - "4000:4000"
     env_file:
       - .env
     volumes:
@@ -29,14 +33,22 @@ services:
   minio:
     image: minio/minio:latest
     ports:
-      - 9000:9000
-      - 9001:9001
+      - "9000:9000"
+      - "9001:9001"
     environment:
-      MINIO_ACCESS_KEY: minio
-      MINIO_SECRET_KEY: minio123
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'mc ready local 2>/dev/null || wget -q --spider http://localhost:9000/minio/health/live'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -44,19 +56,29 @@ services:
 
   minio-client:
     image: minio/mc:latest
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc alias set local http://minio:9000 minio minio123;
-      /usr/bin/mc mb --quiet local/artisera/;
-      /usr/bin/mc anonymous set public local/artisera;
-      "
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until /usr/bin/mc alias set local http://minio:9000 minio minio123; do
+          echo "Waiting for MinIO to become available..."
+          sleep 2
+        done
+
+        /usr/bin/mc mb --ignore-existing local/artisera || exit 1
+
+        /usr/bin/mc anonymous set public local/artisera || exit 1
+
+        echo "MinIO bucket artisera is ready with public access."
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
+    restart: "no"
 
   redis:
     image: redis:7-alpine
     ports:
-      - 6379:6379
+      - "6379:6379"
     deploy:
       resources:
         limits:
