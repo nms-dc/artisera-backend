@@ -1,25 +1,24 @@
 from django import forms
 from django.contrib import admin
-from django.contrib.auth.models import Group
+from django.contrib.admin.sites import NotRegistered
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from django.contrib.auth.forms import ReadOnlyPasswordHashField
+from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
+from django.db.models import Count
 
-from .models import User
+from .models import PERMISSION_SCHEMA, Role, User
 
 
 class UserCreationForm(forms.ModelForm):
-    """A form for creating new users. Includes all the required
-    fields, plus a repeated password."""
-    password1 = forms.CharField(label='Password', widget=forms.PasswordInput)
-    password2 = forms.CharField(label='Password confirmation', widget=forms.PasswordInput)
+    """Create a user with a repeated password (hashed on save)."""
+    password1 = forms.CharField(label="Password", widget=forms.PasswordInput)
+    password2 = forms.CharField(label="Password confirmation", widget=forms.PasswordInput)
 
     class Meta:
         model = User
-        fields = ('email', )
+        fields = ("email", "name", "phone", "role")
 
     def clean_password2(self):
-        # Check that the two password entries match
         password1 = self.cleaned_data.get("password1")
         password2 = self.cleaned_data.get("password2")
         if password1 and password2 and password1 != password2:
@@ -27,7 +26,6 @@ class UserCreationForm(forms.ModelForm):
         return password2
 
     def save(self, commit=True):
-        # Save the provided password in hashed format
         user = super().save(commit=False)
         user.set_password(self.cleaned_data["password1"])
         if commit:
@@ -35,49 +33,73 @@ class UserCreationForm(forms.ModelForm):
         return user
 
 
-class UserChangeForm(forms.ModelForm):
-    """A form for updating users. Includes all the fields on
-    the user, but replaces the password field with admin's
-    disabled password hash display field.
-    """
-    password = ReadOnlyPasswordHashField()
-
-    class Meta:
-        model = User
-        fields = ('email', 'password', 'phone_no', 'is_active', 'is_admin')
-
-
+@admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    # The forms to add and change user instances
-    # form = UserChangeForm
+    # Django's built-in change form is used (it shows the password hash
+    # read-only with the "change password" link), so no custom change form.
     add_form = UserCreationForm
 
-    # The fields to be used in displaying the User model.
-    # These override the definitions on the base UserAdmin
-    # that reference specific fields on auth.User.
-    list_display = ('id','email', 'is_admin', 'phone_no', 'is_verified')
-    list_filter = ('is_admin', 'is_verified', 'is_terms_accepted')
+    list_display = ("email", "name", "role", "phone", "is_active", "created_at")
+    list_filter = ("role", "is_active")
+    list_select_related = ("role",)
+    search_fields = ("email", "name", "phone")
+    ordering = ("name",)
+    readonly_fields = ("id", "last_login", "created_at", "updated_at")
+    filter_horizontal = ("groups", "user_permissions")
+
     fieldsets = (
-        (None, {'fields': ('email', 'password')}),
-        ('Personal info', {'fields': ('first_name', 'last_name', 'phone_no', 'username', 'cuid',)}),
-        ('Company info', {'fields': ('company_name', 'sic_gst_code', 'pan_no', 'website', 'address_one', 'address_two', 'pincode', )}),
-        ('Permissions', {'fields': ('is_admin', 'is_verified', 'is_terms_accepted',)}),
+        (None, {"fields": ("id", "email", "password")}),
+        ("Personal info", {"fields": ("name", "phone", "notes")}),
+        ("Access", {"fields": ("role", "is_active", "is_superuser")}),
+        ("Django permissions (rarely needed)", {
+            "classes": ("collapse",),
+            "fields": ("groups", "user_permissions"),
+        }),
+        ("Dates", {"fields": ("last_login", "created_at", "updated_at")}),
     )
-    # add_fieldsets is not a standard ModelAdmin attribute. UserAdmin
-    # overrides get_fieldsets to use this attribute when creating a user.
+    # add_fieldsets is used by BaseUserAdmin.get_fieldsets when creating a user.
     add_fieldsets = (
         (None, {
-            'classes': ('wide',),
-            'fields': ('email', 'phone_no', 'password1', 'password2'),
+            "classes": ("wide",),
+            "fields": ("email", "name", "phone", "role", "password1", "password2"),
         }),
     )
-    search_fields = ('email', 'phone_no')
-    ordering = ('email',)
-    filter_horizontal = ()
 
 
-# Now register the new UserAdmin...
-admin.site.register(User, UserAdmin)
-# ... and, since we're not using Django's built-in permissions,
-# unregister the Group model from admin.
-admin.site.unregister(Group)
+@admin.register(Role)
+class RoleAdmin(admin.ModelAdmin):
+    list_display = ("name", "id", "status", "is_system", "users_count", "updated_at")
+    list_filter = ("status", "is_system")
+    search_fields = ("name", "description")
+    readonly_fields = ("id", "is_system", "created_at", "updated_at")
+    fields = ("id", "name", "description", "status", "permissions", "is_system",
+              "created_at", "updated_at")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(_users_count=Count("users"))
+
+    @admin.display(description="Users", ordering="_users_count")
+    def users_count(self, obj):
+        return obj._users_count
+
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+        keys = ", ".join(f"{r}: {'/'.join(a)}" for r, a in PERMISSION_SCHEMA.items())
+        form.base_fields["permissions"].help_text = (
+            'JSON, e.g. {"inquiries": {"view": true, "create": true}, "users": {}}. '
+            f"Allowed keys - {keys}. Unknown keys are dropped on save."
+        )
+        return form
+
+    def has_delete_permission(self, request, obj=None):
+        # System roles (ADMIN, RM) can never be deleted.
+        if obj is not None and obj.is_system:
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+# We don't use Django's Group-based permissions; roles replace them.
+try:
+    admin.site.unregister(Group)
+except NotRegistered:
+    pass

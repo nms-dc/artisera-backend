@@ -1,8 +1,8 @@
+
 volumes:
   minio-data:
 
 services:
-
   backend:
     image: artisera-backend/backend
     build:
@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
     command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && python manage.py runserver 0.0.0.0:4000"
     ports:
-      - 4000:4000
+      - "4000:4000"
     env_file:
       - .env
     volumes:
@@ -29,15 +29,22 @@ services:
 
   minio:
     image: minio/minio:latest
+    restart: unless-stopped
     ports:
-      - 9000:9000
-      - 9001:9001
+      - "9000:9000"
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
     deploy:
       resources:
         limits:
@@ -45,22 +52,27 @@ services:
 
   minio-client:
     image: minio/mc:latest
+    restart: "no"
     entrypoint: >
       /bin/sh -c "
-      until /usr/bin/mc alias set local http://minio:9000 minio minio123; do
+      set -e;
+      /usr/bin/mc alias set local http://minio:9000 minio minio123;
+      until /usr/bin/mc ready local; do
         echo 'Waiting for MinIO...';
         sleep 2;
       done;
-      /usr/bin/mc mb --ignore-existing local/artisera/;
+      /usr/bin/mc mb --ignore-existing local/artisera;
       /usr/bin/mc anonymous set public local/artisera;
       "
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
-      - 6379:6379
+      - "6379:6379"
     deploy:
       resources:
         limits:

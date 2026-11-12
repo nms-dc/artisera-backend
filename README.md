@@ -36,4 +36,3 @@
 
 * `sudo docker-compose run backend django-admin startapp farms ./backend/apps/farms` to create a app called farms
 * NOTE please create a folder inside `aquaculture-backend/backend/backend/apps/farms` first before running the command
-"# artisera-backend" 

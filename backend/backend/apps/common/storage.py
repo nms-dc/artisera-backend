@@ -8,7 +8,9 @@ class StaticS3Boto3Storage(S3Boto3Storage):
     def __init__(self, *args, **kwargs):
         if settings.MINIO_ACCESS_URL:
             self.secure_urls = not settings.IS_DEV
-            self.custom_domain = settings.MINIO_ACCESS_URL
+            self.custom_domain = settings.MINIO_ACCESS_URL.replace(
+                "http://", ""
+            ).replace("https://", "")
         super(StaticS3Boto3Storage, self).__init__(*args, **kwargs)
 
 

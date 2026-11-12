@@ -1,3 +1,276 @@
+
+from rest_framework import serializers
+from accounts.models import (
+    User,
+    Role,
+    normalize_permissions,
+)
+
+
+class UserOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["id", "name"]
+
+
+class CurrentUserSerializer(serializers.ModelSerializer):
+    role = serializers.CharField(source="role_id", read_only=True)
+    permissions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "name",
+            "email",
+            "role",
+            "permissions",
+        ]
+
+    def get_permissions(self, obj):
+        return obj.permissions_map
+
+class UserListSerializer(serializers.ModelSerializer):
+    roleId = serializers.CharField(source="role_id", read_only=True)
+    roleName = serializers.CharField(source="role.name", read_only=True)
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "name",
+            "email",
+            "phone",
+            "roleId",
+            "roleName",
+            "status",
+            "notes",
+        ]
+
+    def get_status(self, obj):
+        return "Active" if obj.is_active else "Inactive"
+
+
+class UserCreateSerializer(serializers.ModelSerializer):
+    roleId = serializers.CharField(write_only=True)
+    status = serializers.ChoiceField(
+        choices=["Active", "Inactive"],
+        write_only=True
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "name",
+            "email",
+            "phone",
+            "roleId",
+            "status",
+            "notes",
+        ]
+        read_only_fields = ["id"]
+
+    def validate_email(self, value):
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError(
+                "A user with this email already exists."
+            )
+        return value
+
+    def validate_roleId(self, value):
+        from .models import Role
+
+        if not Role.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Role does not exist.")
+        return value
+
+    def create(self, validated_data):
+        role_id = validated_data.pop("roleId")
+        status = validated_data.pop("status")
+
+        user = User.objects.create_user(
+            password=None,
+            role_id=role_id,
+            is_active=(status == "Active"),
+            **validated_data
+        )
+        return user
+
+
+class UserUpdateSerializer(serializers.ModelSerializer):
+    roleId = serializers.CharField(required=False)
+    status = serializers.ChoiceField(
+        choices=["Active", "Inactive"],
+        required=False,
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            "name",
+            "email",
+            "phone",
+            "roleId",
+            "status",
+            "notes",
+        ]
+
+    def validate_email(self, value):
+        queryset = User.objects.filter(
+            email__iexact=value
+        ).exclude(pk=self.instance.pk)
+
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "A user with this email already exists."
+            )
+
+        return value
+
+    def validate_roleId(self, value):
+        from accounts.models import Role
+
+        if not Role.objects.filter(id=value).exists():
+            raise serializers.ValidationError(
+                "Role does not exist."
+            )
+
+        return value
+
+    def update(self, instance, validated_data):
+        role_id = validated_data.pop("roleId", None)
+        status_value = validated_data.pop("status", None)
+
+        # Update normal fields.
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        # Update role only if supplied.
+        if role_id is not None:
+            instance.role_id = role_id
+
+        # Update status only if supplied.
+        if status_value is not None:
+            instance.is_active = (
+                status_value == "Active"
+            )
+
+        instance.save()
+        return instance
+
+
+class RoleOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = ["id", "name"]
+
+
+class RoleListSerializer(serializers.ModelSerializer):
+    usersCount = serializers.SerializerMethodField()
+    permissions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Role
+        fields = [
+            "id",
+            "name",
+            "description",
+            "status",
+            "usersCount",
+            "permissions",
+        ]
+
+    def get_usersCount(self, obj):
+        return obj.users.count()
+
+    def get_permissions(self, obj):
+        return obj.effective_permissions
+
+
+class RoleCreateSerializer(serializers.ModelSerializer):
+    status = serializers.ChoiceField(
+        choices=["Active", "Inactive"]
+    )
+    permissions = serializers.JSONField()
+
+    class Meta:
+        model = Role
+        fields = [
+            "id",
+            "name",
+            "description",
+            "status",
+            "permissions",
+        ]
+        read_only_fields = ["id"]
+
+    def validate_name(self, value):
+        if Role.objects.filter(name__iexact=value).exists():
+            raise serializers.ValidationError(
+                "This role already exists."
+            )
+        return value
+
+    def validate_permissions(self, value):
+        return normalize_permissions(value)
+
+    def create(self, validated_data):
+        return Role.objects.create(**validated_data)
+
+
+class RoleUpdateSerializer(serializers.ModelSerializer):
+    status = serializers.ChoiceField(
+        choices=["Active", "Inactive"],
+        required=False,
+    )
+    permissions = serializers.JSONField(required=False)
+
+    class Meta:
+        model = Role
+        fields = [
+            "name",
+            "description",
+            "status",
+            "permissions",
+        ]
+
+    def validate_name(self, value):
+        queryset = Role.objects.filter(
+            name__iexact=value
+        ).exclude(pk=self.instance.pk)
+
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "This role already exists."
+            )
+
+        return value
+
+    def validate_permissions(self, value):
+        return normalize_permissions(value)
+
+    def validate(self, attrs):
+        # Admin role can never be deactivated.
+        if (
+            self.instance.is_admin_role
+            and attrs.get("status") == Role.Status.INACTIVE
+        ):
+            raise serializers.ValidationError({
+                "status": [
+                    "The Admin role cannot be deactivated."
+                ]
+            })
+
+        return attrs
+
+"""
+
+
+CHABSONS OLD SERIALIZERS ARE HERE;
+==================================
+
 from rest_framework import serializers
 from accounts.models import User, create_username, Image, DailyVisit
 from product.models import Address
@@ -140,5 +413,5 @@ class DailyVisitsSerializer(serializers.ModelSerializer):
         model = DailyVisit
         fields = ['count','date']
 
-
+"""
 
