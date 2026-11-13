@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+Untitled.ipynb
+untitled.txt
+payloads.csv
+ARTISERA.postman_collection.json

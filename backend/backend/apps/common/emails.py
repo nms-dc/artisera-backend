@@ -1,8 +1,7 @@
-import os
 from sendgrid import SendGridAPIClient
 from typing import List, Dict
 from django.conf import settings
-
+import os
 class BaseSendGridEmailTemplate(object):
 
     @classmethod
@@ -50,7 +49,7 @@ class BaseSendGridEmailTemplate(object):
                 ],
                 "template_id": cls.template_id
             }
-            client = SendGridAPIClient(api_key=os.getenv("SENDGRID_API_KEY"))
+            client = SendGridAPIClient(api_key=os.getenv("SENDGRIDAPIKEY"))
             client.client.mail.send.post(request_body=email_data)
             #print(client).data
             return True

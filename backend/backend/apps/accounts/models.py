@@ -1,178 +1,181 @@
+import uuid
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
-import datetime
-import re
-from django.core import validators
-from django.utils import timezone
-from django.contrib.auth.models import (
-    BaseUserManager, AbstractBaseUser
-)
-from django.conf import settings
-from django.db.models.signals import post_save
-from django.dispatch import receiver
-from rest_framework.authtoken.models import Token
 
-def create_username(email: str) -> str:
-    split_email = email.split('@')
-    if len(split_email) < 2:
-        raise ValueError('Cannot get username from email')
-    username = split_email[0]
-    users_username_count = User.objects.filter(username=username).count()
-    username = f'{username}' if users_username_count < 1 else f'{username}{users_username_count}'
-    return username
+# --------------------------------------------------------------------------
+# Permission schema (single source of truth, mirrors the API spec: A01/R02)
+# --------------------------------------------------------------------------
+CRUD_ACTIONS = ("view", "create", "edit", "delete", "assignRm")
 
+PERMISSION_SCHEMA = {
+    "inquiries": CRUD_ACTIONS,
+    "customers": CRUD_ACTIONS,
+    "masters": CRUD_ACTIONS,
+    "reports": ("view",),
+    "users": CRUD_ACTIONS,
+}
 
-def user_picture(instance, filename):
-    return f'user_image/{datetime.datetime.now()}_{filename}'
+ADMIN_ROLE_ID = "ADMIN"
+RM_ROLE_ID = "RM"
+
+FULL_PERMISSIONS = {
+    resource: {action: True for action in actions}
+    for resource, actions in PERMISSION_SCHEMA.items()
+}
 
 
+def normalize_permissions(raw):
+    """
+    Return a clean permissions dict:
+      - every resource key is present (R03 sends "users": {} for no access)
+      - only known actions are kept
+      - only True flags are stored (missing key == False, per A03 note)
+    """
+    raw = raw or {}
+    clean = {}
+    for resource, actions in PERMISSION_SCHEMA.items():
+        given = raw.get(resource) or {}
+        clean[resource] = {a: True for a in actions if given.get(a) is True}
+    return clean
+
+
+def new_role_id():
+    # Custom roles get a UUID string; system roles use fixed ids 'ADMIN' / 'RM'.
+    return str(uuid.uuid4())
+
+
+# --------------------------------------------------------------------------
+# Role
+# --------------------------------------------------------------------------
+class Role(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "Active", "Active"
+        INACTIVE = "Inactive", "Inactive"
+
+    # String PK so the API can expose 'ADMIN', 'RM' and UUIDs through one `id`.
+    id = models.CharField(primary_key=True, max_length=64, default=new_role_id, editable=False)
+    # Case-insensitive duplicates ("sales" vs "Sales") are rejected in the
+    # serializer (name__iexact); the DB constraint covers the exact match.
+    name = models.CharField(max_length=100, unique=True)
+    description = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    permissions = models.JSONField(default=dict, blank=True)
+    is_system = models.BooleanField(default=False, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def is_admin_role(self):
+        return self.pk == ADMIN_ROLE_ID
+
+    @property
+    def effective_permissions(self):
+        # Admin always has everything, whatever is stored (see R05 note).
+        if self.is_admin_role:
+            return FULL_PERMISSIONS
+        return normalize_permissions(self.permissions)
+
+    def save(self, *args, **kwargs):
+        self.permissions = normalize_permissions(self.permissions)
+        if self.is_admin_role:
+            # R05: "The Admin role cannot be deactivated."
+            self.status = self.Status.ACTIVE
+            self.is_system = True
+        super().save(*args, **kwargs)
+
+
+# --------------------------------------------------------------------------
+# User
+# --------------------------------------------------------------------------
 class UserManager(BaseUserManager):
-    def create_user(self, email, username, password=None, **extra_fields):
-        """
-        Creates and saves a User with the given email, date of
-        birth and password.
-        """
-        if not email:
-            raise ValueError('Users must have an email address')
-        if not username:
-            username = create_username(email)
+    use_in_migrations = True
 
-        user = self.model(
-            email=self.normalize_email(email),
-            username=username,
-            **extra_fields
-        )
-        
-        user.isErpCustomer = True  # Set isErpCustomer to True after saving
+    def _create(self, email, password, **extra):
+        if not email:
+            raise ValueError("Users must have an email address")
+        user = self.model(email=self.normalize_email(email).lower(), **extra)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, username=None, password=None, **extra_fields):
-        """
-        Creates and saves a superuser with the given email, date of
-        birth and password.
-        """
-        if not username:
-            username = create_username(email)
-        user = self.create_user(
-            email,
-            username=username,
-            password=password,
-            **extra_fields
-        )
-        user.is_admin = True
-        user.is_verified = True
-        user.isErpCustomer = True
-        user.save(using=self._db)
-        return user
+    def create_user(self, email, password=None, **extra):
+        extra.setdefault("role_id", RM_ROLE_ID)
+        return self._create(email, password, **extra)
+
+    def create_superuser(self, email, password=None, **extra):
+        extra["role_id"] = ADMIN_ROLE_ID
+        extra["is_superuser"] = True
+        return self._create(email, password, **extra)
+
+    def options(self, role_id=None):
+        """U01: active users only, optionally filtered by role."""
+        qs = self.filter(is_active=True).order_by("name")
+        return qs.filter(role_id=role_id) if role_id else qs
 
 
-class User(AbstractBaseUser):
-    email = models.EmailField(
-        verbose_name='email address',
-        max_length=255,
-        unique=True,
-    )
-    first_name = models.CharField(max_length=255, default="Aqua")
-    last_name = models.CharField(max_length=255, default="User")
-    phone_no = models.CharField(max_length=20, blank=True,)
-    company_name = models.CharField(max_length=200, default='', blank=True)
-    sic_gst_code = models.CharField(max_length=200, default='', blank=True)
-    pan_no = models.CharField(max_length=200, default='', blank=True)
-    address_one = models.TextField(default='', blank=True)
-    address_two = models.TextField(default='', blank=True)
-    pincode = models.IntegerField(default=0, blank=True)
-    website = models.URLField(max_length=200, default='', blank=True)
-    username = models.CharField(
-        'username', max_length=30, unique=False, default="",
-        validators=[
-            validators.RegexValidator(
-                re.compile(r'^[\w.@+-]+$'), 'put valid username', 'username is invalid')
-        ]
-    )
-    date_joined = models.DateTimeField('date joined', default=timezone.now)
+class User(AbstractBaseUser, PermissionsMixin):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=150, default="unknown")
+    email = models.EmailField(max_length=255, unique=True)
+    phone = models.CharField(max_length=20, blank=True, default="")
+    role = models.ForeignKey(Role, on_delete=models.PROTECT, related_name="users",default="RM")
+    # API "status" ('Active'/'Inactive') maps to this boolean; see `status` below.
     is_active = models.BooleanField(default=True)
-    is_admin = models.BooleanField(default=False)
-    is_verified = models.BooleanField(default=False)
-    is_terms_accepted = models.BooleanField(default=False)
-    city = models.CharField(max_length=200, default='', blank=True)
-    country = models.CharField(max_length=200, default='', blank=True)
-    wallet_balance = models.CharField(max_length=255, blank=True, null=True)
-    customer_number = models.CharField(max_length=510, blank=True, null=True)
-    cuid = models.CharField(max_length=200, blank=True, null=True)
-    alid = models.CharField(max_length=200, blank=True, null=True)
-    created_at = models.DateTimeField(null=True, blank=True)
-    updated_at = models.DateTimeField(null=True, blank=True)
-    isErpCustomer = models.BooleanField(default=False, null=True, blank= True)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True,null=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     objects = UserManager()
 
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['phone_no']
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = ["name"]
+
+    class Meta:
+        ordering = ["name"]
 
     def __str__(self):
-        return self.first_name
+        return self.name
 
-    def has_perm(self, perm, obj=None):
-        "Does the user have a specific permission?"
-        # Simplest possible answer: Yes, always
-        return True
+    # --- API helpers ------------------------------------------------------
+    @property
+    def status(self):
+        return Role.Status.ACTIVE if self.is_active else Role.Status.INACTIVE
 
-    def has_module_perms(self, app_label):
-        "Does the user have permissions to view the app `app_label`?"
-        # Simplest possible answer: Yes, always
-        return True
+    @status.setter
+    def status(self, value):
+        self.is_active = value == Role.Status.ACTIVE
 
+    @property
+    def role_name(self):
+        return self.role.name
+
+    @property
+    def permissions_map(self):
+        """Shape returned by A01 / A03."""
+        return self.role.effective_permissions
+
+    def can(self, resource, action):
+        """Used by the DRF permission class: user.can('inquiries', 'assignRm')."""
+        return bool(self.permissions_map.get(resource, {}).get(action))
+
+    @property
+    def is_admin(self):
+        return self.role_id == ADMIN_ROLE_ID
+
+    # --- Django admin -----------------------------------------------------
     @property
     def is_staff(self):
-        "Is the user a member of staff?"
-        # Simplest possible answer: All admins are staff
-        return self.is_admin
+        return self.is_admin or self.is_superuser
 
-    @property
-    def is_verified_user(self):
-        "Is the user a verified user?"
-        # Simplest possible answer: All admins are staff but not normal user
-        return self.is_verified
-    
-@receiver(post_save, sender=settings.AUTH_USER_MODEL)
-def create_auth_token(sender, instance = None, created=False, **kwargs):
-    #if new  user has  been created we want to generate a token
-    if created:
-        Token.objects.create(user=instance)
-
+    def save(self, *args, **kwargs):
+        self.email = self.email.lower()
+        super().save(*args, **kwargs)
 
 class Address(models.Model):
-    Add_types=(
-        ('H', "Home"),
-        ('W', "Work"),
-        ('O', 'Office')
-    )
-
-    first_name = models.CharField(max_length=255, null=True, blank=True)
-    last_name = models.CharField(max_length=255, null=True, blank=True)
-    state = models.CharField(max_length=255, null=True, blank=True)
-    country = models.CharField(max_length=255, null=True, blank=True)
-    pincode = models.CharField(max_length=28, default=0, null=True, blank=True)
-    city = models.CharField(max_length=255, null=True, blank=True)
-    phone_no = models.CharField(max_length=15,default=0, null=True, blank=True)
-    email_address = models.EmailField(null=True)
-    service_area = models.CharField(max_length=90, choices=Add_types, default="H",  null=True, blank=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
-    address_one = models.TextField(default='', null=True, blank=True)
-    address_two = models.TextField(default='', null=True, blank=True)
-    addstid = models.CharField(max_length=255, null=True, blank=True)
-    addctid = models.CharField(max_length=255, null=True, blank=True)
-    addsaid = models.CharField(max_length=255, null=True, blank=True)
-    def __str__(self) -> str:
-        return str(self.id)
-
-
-class Image(models.Model):
-    image_name = models.CharField(max_length=400, null=True)
-    image = models.FileField(upload_to='user_images', null=True)
-    images = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_images', default=None, null=True)
-
-class DailyVisit(models.Model):
-    date = models.DateField(auto_now_add=True,null=True,blank=True)
-    count = models.PositiveIntegerField(default=0,null=True,blank=True)
+    pass
