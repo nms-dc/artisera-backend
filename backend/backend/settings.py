@@ -12,9 +12,9 @@ from corsheaders.defaults import default_headers
 from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.append(os.path.join(BASE_DIR, 'backend/apps/'))
+sys.path.append(os.path.join(BASE_DIR, "backend/apps/"))
 
-SECRET_KEY = os.getenv('SECRET_KEY')
+SECRET_KEY = os.getenv("SECRET_KEY")
 
 # Env
 ENV = os.getenv("ENV")
@@ -23,42 +23,43 @@ IS_STAGE = ENV == "stage"
 IS_PROD = ENV == "prod"
 
 # Email
-DEFAULT_FROM_EMAIL = 'BackWater Resources Pvt Ltd <noreply@backwaterglobal.com>'
+DEFAULT_FROM_EMAIL = "BackWater Resources Pvt Ltd <noreply@backwaterglobal.com>"
 
 # FIXED: these were only defined when IS_DEV, so any other ENV crashed on WWW_ROOT.
-DOMAIN_NAME = os.getenv('DOMAIN_NAME', 'localhost:80')
-PROTOCOl_NAME = 'http' if IS_DEV else 'https'
+DOMAIN_NAME = os.getenv("DOMAIN_NAME", "localhost:80")
+PROTOCOl_NAME = "http" if IS_DEV else "https"
 
 # FIXED: DEBUG was undefined outside dev/stage.
 DEBUG = IS_DEV or IS_STAGE
 
 WWW_ROOT = f"{PROTOCOl_NAME}://{DOMAIN_NAME}"
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ["*"]
 
 # Application definition
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
     # 'django.contrib.sites',          # DISABLED: only allauth needed it (SITE_ID below)
-    'rest_framework',
-    'rest_framework.authtoken',        # temporary, until cookie JWT login is added
-    'corsheaders',
-    'django_filters',
-    'accounts',
-    'common', 
-    'inquiries',
-    'dashboard',
-    'reports',
+    "rest_framework",
+    "rest_framework.authtoken",  # temporary, until cookie JWT login is added
+    "corsheaders",
+    "django_filters",
+    "accounts",
+    "common",
+    "inquiries",
+    "dashboard",
+    "reports",
     "notifications",
+    "import_export",
     # keep: holds common.storage
     # 'product',                       # DISABLED: old project app (uses old User fields)
     # 'company',                       # DISABLED: old project app
-    'drf_spectacular',
+    "drf_spectacular",
     # 'ERPintegration',                # DISABLED: old project app
     # Google auth, DISABLED: packages removed from base.txt
     # 'allauth',
@@ -72,62 +73,64 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
+    "django.middleware.security.SecurityMiddleware",
     # FIXED: CorsMiddleware must come before CommonMiddleware (it was last).
-    'corsheaders.middleware.CorsMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "corsheaders.middleware.CorsMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
     # 'allauth.account.middleware.AccountMiddleware',   # DISABLED: re-add with allauth
 ]
 
-ROOT_URLCONF = 'backend.urls'
+ROOT_URLCONF = "backend.urls"
 
-AUTH_USER_MODEL = 'accounts.User'
+AUTH_USER_MODEL = "accounts.User"
 
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
 
-WSGI_APPLICATION = 'backend.wsgi.application'
+WSGI_APPLICATION = "backend.wsgi.application"
 
 # Database
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': f"{os.getenv('POSTGRES_DB')}",
-        'USER': f"{os.getenv('POSTGRES_USER')}",
-        'PASSWORD': f"{os.getenv('POSTGRES_PASSWORD')}",
-        'HOST': f"{os.getenv('POSTGRES_HOST')}"
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": f"{os.getenv('POSTGRES_DB')}",
+        "USER": f"{os.getenv('POSTGRES_USER')}",
+        "PASSWORD": f"{os.getenv('POSTGRES_PASSWORD')}",
+        "HOST": f"{os.getenv('POSTGRES_HOST')}",
     }
 }
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
-    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
 # Internationalization
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "UTC"
 USE_I18N = True
 # USE_L10N = True                      # REMOVED in Django 5.0 (always on)
 USE_TZ = True
@@ -135,9 +138,9 @@ USE_TZ = True
 # Static / media
 FILE_UPLOAD_MAX_MEMORY_SIZE = 4194304  # 4mb
 
-STATIC_URL = '/static/'
-STATICFILES_LOCATION = 'static'
-MEDIA_URL = '/uploads/'
+STATIC_URL = "/static/"
+STATICFILES_LOCATION = "static"
+MEDIA_URL = "/uploads/"
 
 # CHANGED: STATICFILES_STORAGE / DEFAULT_FILE_STORAGE were removed in Django 5.1.
 STORAGES = {
@@ -153,7 +156,7 @@ AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_URL")
 MINIO_ACCESS_URL = os.getenv("MINIO_ACCESS_URL")
 AWS_S3_URL_PROTOCOL = "http:"
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # CORS
 # CHANGED: old names (CORS_ORIGIN_ALLOW_ALL / CORS_ORIGIN_WHITELIST) were removed
@@ -161,14 +164,14 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_ALL_ORIGINS = IS_DEV
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:80',
-    'http://0.0.0.0:80',
+    "http://localhost:80",
+    "http://0.0.0.0:80",
 ]
-CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
+CORS_ALLOW_METHODS = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
 CORS_ALLOW_HEADERS = default_headers
 
 
-#simple jwt for artisera
+# simple jwt for artisera
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -207,16 +210,16 @@ REST_FRAMEWORK = {
 """
 
 # celery configurations
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL')
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND')
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 
 # Authentication backends
 AUTHENTICATION_BACKENDS = [
-    'django.contrib.auth.backends.ModelBackend',
+    "django.contrib.auth.backends.ModelBackend",
     # DISABLED: Google / social login
     # 'allauth.account.auth_backends.AuthenticationBackend',
     # 'accounts.auth_backends.PhoneOTPBackend',   # old accounts module, not in new accounts app
@@ -239,8 +242,8 @@ AUTHENTICATION_BACKENDS = [
 # ]
 # SITE_ID = 5
 
-LOGIN_REDIRECT_URL = '/'
-LOGOUT_REDIRECT_URL = '/'
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/"
 
 # Email
 # CHANGED: sendgrid_backend is not in base.txt; console output in dev, SMTP/sendgrid later.
