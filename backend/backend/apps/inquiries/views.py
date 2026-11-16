@@ -1,6 +1,6 @@
 from datetime import timedelta
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q, Count
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -9,37 +9,66 @@ from django.core.paginator import Paginator
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from .models import Inquiry, InquiryActivity
-from .serializers import InquiryListSerializer, InquiryCreateSerializer, InquiryActivitySerializer
-from inquiries.models import Customer,Category, Subcategory, Artist
-from inquiries.serializers import CustomerListSerializer,CustomerCreateSerializer, CustomerUpdateSerializer,CustomerActivitySerializer
+from .serializers import (
+    InquiryListSerializer,
+    InquiryCreateSerializer,
+    InquiryActivitySerializer,
+)
+from inquiries.models import Customer, Category, Subcategory, Artist
+from inquiries.serializers import (
+    CustomerListSerializer,
+    CustomerCreateSerializer,
+    CustomerUpdateSerializer,
+    CustomerActivitySerializer,
+)
 from rest_framework import status
 
+MAX_PAGE_SIZE = 100
+
+
+def _parse_value_band(band):
+    """
+    Accepts "min-max" (e.g. "50000-200000") or "min+" (e.g. "500000+").
+    Returns a Q filter, or None if the format isn't recognised.
+    """
+    band = band.strip()
+    try:
+        if band.endswith("+"):
+            return Q(value__gte=float(band[:-1]))
+        if "-" in band:
+            low, high = band.split("-", 1)
+            return Q(value__gte=float(low), value__lte=float(high))
+    except ValueError:
+        pass
+    return None
 
 
 class InquiryListView(APIView):
 
-    def get_queryset(self, request, apply_tab=True):
+    def get_queryset(
+        self, request, apply_tab=True, apply_status=True, with_repeat=True
+    ):
         user = request.user
-
-        queryset = (
-            Inquiry.objects
-            .select_related(
-                "customer",
-                "category",
-                "subcategory",
-                "artist",
-                "rm",
-            )
+        params = request.query_params
+        queryset = Inquiry.objects.select_related(
+            "customer", "category", "subcategory", "artist", "rm"
         )
 
-        # RM users can only see their own inquiries.
+        # The repeat_prospect subquery is only needed for the list, not for counts
+        if with_repeat:
+            queryset = queryset.annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+
+        # RM users only see their own inquiries
         if not user.is_admin:
             queryset = queryset.filter(rm=user)
 
-        # Tab filtering
-        tab = request.query_params.get("tab", "all")
-
-                # Tab filtering
+        # ---- Tab ----
         tab_filters = {
             "unassigned": Q(rm__isnull=True),
             "assigned": Q(rm__isnull=False),
@@ -50,20 +79,15 @@ class InquiryListView(APIView):
             "won": Q(status=Inquiry.Status.WON),
             "lost": Q(status=Inquiry.Status.LOST),
         }
-
         if apply_tab:
-            tab = request.query_params.get("tab", "all")
-
+            tab = params.get("tab", "all")
             if tab == "today":
-                today = timezone.localdate()
-                queryset = queryset.filter(
-                    next_follow_up__date=today
-                )
+                queryset = queryset.filter(next_follow_up__date=timezone.localdate())
             elif tab in tab_filters:
                 queryset = queryset.filter(tab_filters[tab])
 
-        # Search
-        q = request.query_params.get("q")
+        # ---- Search ----
+        q = params.get("q")
         if q:
             queryset = queryset.filter(
                 Q(customer__name__icontains=q)
@@ -72,35 +96,43 @@ class InquiryListView(APIView):
                 | Q(code__icontains=q)
             )
 
-        # Priority filter
-        priority = request.query_params.get("priority")
-        if priority:
-            queryset = queryset.filter(priority=priority)
+        # ---- Simple filters ----
+        if params.get("priority"):
+            queryset = queryset.filter(priority=params["priority"])
+        if params.get("source"):
+            queryset = queryset.filter(source=params["source"])
+        if params.get("customerId"):
+            queryset = queryset.filter(customer_id=params["customerId"])
+        if params.get("rmId") and user.is_admin:  # RMs are already scoped to themselves
+            queryset = queryset.filter(rm_id=params["rmId"])
 
-        # Source filter
-        source = request.query_params.get("source")
-        if source:
-            queryset = queryset.filter(source=source)
+        # status: single value or comma-separated list
+        if apply_status and params.get("status"):
+            statuses = [s.strip() for s in params["status"].split(",") if s.strip()]
+            queryset = queryset.filter(status__in=statuses)
 
-        # Date range
-        date_range = request.query_params.get("dateRange")
+        # valueBand
+        if params.get("valueBand"):
+            band_q = _parse_value_band(params["valueBand"])
+            if band_q is not None:
+                queryset = queryset.filter(band_q)
+
+        # ---- dateRange: "today" or number of days ----
+        date_range = params.get("dateRange")
         if date_range:
-            try:
-                days = int(date_range)
-                if days > 0:
-                    start_date = timezone.now() - timedelta(days=days)
-                    queryset = queryset.filter(
-                        created_at__gte=start_date
-                    )
-            except ValueError:
-                pass
+            if date_range == "today":
+                queryset = queryset.filter(created_at__date=timezone.localdate())
+            else:
+                try:
+                    days = int(date_range)
+                    if days > 0:
+                        queryset = queryset.filter(
+                            created_at__gte=timezone.now() - timedelta(days=days)
+                        )
+                except ValueError:
+                    pass
 
-        # Ordering
-        ordering = request.query_params.get(
-            "ordering",
-            "-createdAt",
-        )
-
+        # ---- Ordering ----
         ordering_map = {
             "createdAt": "created_at",
             "-createdAt": "-created_at",
@@ -109,111 +141,46 @@ class InquiryListView(APIView):
             "value": "value",
             "-value": "-value",
         }
+        ordering = ordering_map.get(params.get("ordering", "-createdAt"), "-created_at")
+        return queryset.order_by(ordering, "-id")  # "-id" keeps pages stable on ties
 
-        return queryset.order_by(
-            ordering_map.get(ordering, "-created_at")
-        )
+    def get(self, request):
+        queryset = self.get_queryset(request)
 
-    
-    def post(self, request):
-        serializer = InquiryCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        data = serializer.validated_data
-        user = request.user
-
-        can_assign_rm = (
-            user.is_admin
-            or user.permissions.get("inquiries", {}).get("assignRm", False)
-        )
-
-        if can_assign_rm:
-            rm_id = data.get("rmId")
-            priority = data.get("priority", Inquiry.Priority.MEDIUM)
-        else:
-            rm_id = user.id
-            priority = Inquiry.Priority.MEDIUM
-
-        # Generate the next inquiry code.
-        last_inquiry = (
-            Inquiry.objects
-            .filter(code__startswith="INQ-")
-            .order_by("-code")
-            .first()
-        )
-
-        next_number = 1
-        if last_inquiry:
+        def _int(name, default, minimum=1, maximum=None):
             try:
-                next_number = int(last_inquiry.code.split("-")[-1]) + 1
-            except (ValueError, IndexError):
-                pass
+                value = int(request.query_params.get(name, default))
+            except (TypeError, ValueError):
+                return default
+            value = max(value, minimum)
+            return min(value, maximum) if maximum else value
 
-        code = f"INQ-{next_number:05d}"
+        page = _int("page", 1)
+        page_size = _int("pageSize", 10, maximum=MAX_PAGE_SIZE)
 
-        inquiry = Inquiry.objects.create(
-            code=code,
-            customer_id=data["customerId"],
-            inquiry_type=data["inquiryType"],
-            requirement=data["requirement"],
-            quantity=data["quantity"],
-            value=data["value"],
-            category_id=data["categoryId"],
-            subcategory_id=data["subcategoryId"],
-            artist_id=data.get("artistId"),
-            source=data["source"],
-            priority=priority,
-            status=Inquiry.Status.TOUCHBASE,
-            rm_id=rm_id,
-            assigned_on=timezone.now() if rm_id else None,
-            notes=data.get("notes", ""),
-            expected_timeline=data.get("expectedTimeline", ""),
-            budget_range=data.get("budgetRange", ""),
-            art_style=data.get("artStyle", ""),
-        )
-
-        InquiryActivity.objects.create(
-            inquiry=inquiry,
-            action="created",
-            description="Inquiry created",
-            metadata={
-                "code": inquiry.code,
-                "status": inquiry.status,
-                "source": inquiry.source,
-            },
-            created_by=user,
-        )
-        inquiry = (
-            Inquiry.objects
-            .select_related(
-                "customer",
-                "category",
-                "subcategory",
-                "artist",
-                "rm",
-            )
-            .get(pk=inquiry.pk)
-        )
+        count = queryset.count()
+        start = (page - 1) * page_size
+        items = queryset[start : start + page_size]
 
         return Response(
-            InquiryListSerializer(inquiry).data,
-            status=201,
+            {
+                "count": count,
+                "page": page,
+                "pageSize": page_size,
+                "results": InquiryListSerializer(items, many=True).data,
+            }
         )
-
 
 
 class InquiryDetailView(APIView):
 
     def get(self, request, pk):
-        queryset = (
-            Inquiry.objects
-            .select_related(
-                "customer",
-                "category",
-                "subcategory",
-                "artist",
-                "rm",
-            )
+        queryset = Inquiry.objects.select_related(
+            "customer",
+            "category",
+            "subcategory",
+            "artist",
+            "rm",
         )
 
         # Admin can view all inquiries.
@@ -223,9 +190,7 @@ class InquiryDetailView(APIView):
 
         inquiry = get_object_or_404(queryset, pk=pk)
 
-        return Response(
-            InquiryListSerializer(inquiry).data
-        )
+        return Response(InquiryListSerializer(inquiry).data)
 
     def put(self, request, pk):
         serializer = InquiryCreateSerializer(data=request.data)
@@ -241,9 +206,8 @@ class InquiryDetailView(APIView):
 
         inquiry = get_object_or_404(queryset, pk=pk)
 
-        can_assign_rm = (
-            user.is_admin
-            or user.permissions.get("inquiries", {}).get("assignRm", False)
+        can_assign_rm = user.is_admin or user.permissions.get("inquiries", {}).get(
+            "assignRm", False
         )
 
         if can_assign_rm:
@@ -275,17 +239,13 @@ class InquiryDetailView(APIView):
 
         inquiry.save()
 
-        inquiry = (
-            Inquiry.objects
-            .select_related(
-                "customer",
-                "category",
-                "subcategory",
-                "artist",
-                "rm",
-            )
-            .get(pk=inquiry.pk)
-        )
+        inquiry = Inquiry.objects.select_related(
+            "customer",
+            "category",
+            "subcategory",
+            "artist",
+            "rm",
+        ).get(pk=inquiry.pk)
 
         return Response(InquiryListSerializer(inquiry).data)
 
@@ -293,38 +253,39 @@ class InquiryDetailView(APIView):
 class InquiryCountsView(InquiryListView):
     """
     Return tab counts for the Admin inquiry screen.
+    Honors q, priority, source, rmId, customerId, valueBand and dateRange,
+    but NOT the selected tab or status, so every badge shows its own total.
     """
 
-    def get(self, request):
-        # Apply search and other filters, but NOT the selected tab.
-        queryset = self.get_queryset(request, apply_tab=False)
+    # Inherits from InquiryListView, so block POST (it would create an inquiry)
+    http_method_names = ["get", "head", "options"]
 
-        return Response({
-            "all": queryset.count(),
-            "unassigned": queryset.filter(rm__isnull=True).count(),
-            "assigned": queryset.filter(rm__isnull=False).count(),
-            "today": queryset.filter(
-                next_follow_up__date=timezone.localdate()
-            ).count(),
-            "touchbase": queryset.filter(
-                status=Inquiry.Status.TOUCHBASE
-            ).count(),
-            "followup": queryset.filter(
-                status=Inquiry.Status.TOUCHBASE_FOLLOWUP
-            ).count(),
-            "active": queryset.filter(
-                status=Inquiry.Status.ACTIVE_CONVERSATIONS
-            ).count(),
-            "nurture": queryset.filter(
-                status=Inquiry.Status.NURTURE
-            ).count(),
-            "won": queryset.filter(
-                status=Inquiry.Status.WON
-            ).count(),
-            "lost": queryset.filter(
-                status=Inquiry.Status.LOST
-            ).count(),
-        })
+    def get(self, request):
+        queryset = self.get_queryset(
+            request,
+            apply_tab=False,
+            apply_status=False,
+            with_repeat=False,
+        ).order_by()  # ordering isn't needed for counts
+
+        S = Inquiry.Status
+        today = timezone.localdate()
+
+        return Response(
+            queryset.aggregate(
+                all=Count("id"),
+                unassigned=Count("id", filter=Q(rm__isnull=True)),
+                assigned=Count("id", filter=Q(rm__isnull=False)),
+                today=Count("id", filter=Q(next_follow_up__date=today)),
+                touchbase=Count("id", filter=Q(status=S.TOUCHBASE)),
+                followup=Count("id", filter=Q(status=S.TOUCHBASE_FOLLOWUP)),
+                active=Count("id", filter=Q(status=S.ACTIVE_CONVERSATIONS)),
+                nurture=Count("id", filter=Q(status=S.NURTURE)),
+                won=Count("id", filter=Q(status=S.WON)),
+                lost=Count("id", filter=Q(status=S.LOST)),
+            )
+        )
+
 
 class InquiryActivityListView(APIView):
 
@@ -337,16 +298,11 @@ class InquiryActivityListView(APIView):
 
         inquiry = get_object_or_404(queryset, pk=pk)
 
-        activities = (
-            InquiryActivity.objects
-            .filter(inquiry=inquiry)
-            .select_related("created_by")
+        activities = InquiryActivity.objects.filter(inquiry=inquiry).select_related(
+            "created_by"
         )
 
-        serializer = InquiryActivitySerializer(
-            activities,
-            many=True
-        )
+        serializer = InquiryActivitySerializer(activities, many=True)
 
         return Response(serializer.data)
 
@@ -356,15 +312,9 @@ class CustomerListView(APIView):
 
     def get(self, request):
         if not request.user.can("customers", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
-        queryset = (
-            Customer.objects
-            .select_related("rm")
-            .all()
-        )
+        queryset = Customer.objects.select_related("rm").all()
 
         # Search
         search = request.query_params.get("q")
@@ -379,21 +329,15 @@ class CustomerListView(APIView):
         # Filters
         customer_type = request.query_params.get("customerType")
         if customer_type:
-            queryset = queryset.filter(
-                customer_type=customer_type
-            )
+            queryset = queryset.filter(customer_type=customer_type)
 
         status_filter = request.query_params.get("status")
         if status_filter:
-            queryset = queryset.filter(
-                status=status_filter
-            )
+            queryset = queryset.filter(status=status_filter)
 
         location = request.query_params.get("location")
         if location:
-            queryset = queryset.filter(
-                location__iexact=location
-            )
+            queryset = queryset.filter(location__iexact=location)
 
         queryset = queryset.order_by("name")
 
@@ -415,47 +359,41 @@ class CustomerListView(APIView):
             many=True,
         )
 
-        return Response({
-            "count": paginator.count,
-            "page": page_obj.number,
-            "pageSize": page_size,
-            "results": serializer.data,
-        })
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page_obj.number,
+                "pageSize": page_size,
+                "results": serializer.data,
+            }
+        )
 
     def post(self, request):
         if not request.user.can("customers", "create"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         serializer = CustomerCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         customer = serializer.save()
 
-        customer = (
-            Customer.objects
-            .select_related("rm")
-            .get(pk=customer.pk)
-        )
+        customer = Customer.objects.select_related("rm").get(pk=customer.pk)
 
         return Response(
             CustomerListSerializer(customer).data,
             status=status.HTTP_201_CREATED,
         )
 
+
 class CustomerLocationsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         if not request.user.can("customers", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         locations = (
-            Customer.objects
-            .exclude(location="")
+            Customer.objects.exclude(location="")
             .exclude(location__isnull=True)
             .values_list("location", flat=True)
             .distinct()
@@ -470,38 +408,24 @@ class CustomerDetailView(APIView):
 
     def get(self, request, pk):
         if not request.user.can("customers", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         try:
-            customer = (
-                Customer.objects
-                .select_related("rm")
-                .get(pk=pk)
-            )
+            customer = Customer.objects.select_related("rm").get(pk=pk)
         except Customer.DoesNotExist:
             return Response(
                 {"detail": "Customer not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response(
-            CustomerListSerializer(customer).data
-        )
+        return Response(CustomerListSerializer(customer).data)
 
     def patch(self, request, pk):
         if not request.user.can("customers", "edit"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         try:
-            customer = (
-                Customer.objects
-                .select_related("rm")
-                .get(pk=pk)
-            )
+            customer = Customer.objects.select_related("rm").get(pk=pk)
         except Customer.DoesNotExist:
             return Response(
                 {"detail": "Customer not found."},
@@ -530,18 +454,15 @@ class CustomerDetailView(APIView):
             customer.customer_since = timezone.now()
             customer.save(update_fields=["customer_since"])
 
-        return Response(
-            CustomerListSerializer(customer).data
-        )
+        return Response(CustomerListSerializer(customer).data)
+
 
 class CustomerActivitiesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
         if not request.user.can("customers", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         # Make sure the customer exists.
         try:
@@ -553,8 +474,7 @@ class CustomerActivitiesView(APIView):
             )
 
         activities = (
-            InquiryActivity.objects
-            .filter(inquiry__customer_id=pk)
+            InquiryActivity.objects.filter(inquiry__customer_id=pk)
             .select_related("inquiry", "created_by")
             .order_by("-created_at")
         )
@@ -572,32 +492,26 @@ class MasterOptionsView(APIView):
 
     def get(self, request, kind):
         if not request.user.can("masters", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         category_id = request.query_params.get("categoryId")
 
         if kind == "categories":
-            queryset = (
-                Category.objects
-                .filter(is_active=True)
-                .order_by("name")
-            )
+            queryset = Category.objects.filter(is_active=True).order_by("name")
 
-            return Response([
-                {
-                    "id": str(obj.id),
-                    "name": obj.name,
-                }
-                for obj in queryset
-            ])
+            return Response(
+                [
+                    {
+                        "id": str(obj.id),
+                        "name": obj.name,
+                    }
+                    for obj in queryset
+                ]
+            )
 
         if kind == "subcategories":
-            queryset = (
-                Subcategory.objects
-                .filter(is_active=True)
-                .select_related("category")
+            queryset = Subcategory.objects.filter(is_active=True).select_related(
+                "category"
             )
 
             if category_id:
@@ -605,38 +519,37 @@ class MasterOptionsView(APIView):
 
             queryset = queryset.order_by("name")
 
-            return Response([
-                {
-                    "id": str(obj.id),
-                    "name": obj.name,
-                    "categoryId": str(obj.category_id),
-                }
-                for obj in queryset
-            ])
+            return Response(
+                [
+                    {
+                        "id": str(obj.id),
+                        "name": obj.name,
+                        "categoryId": str(obj.category_id),
+                    }
+                    for obj in queryset
+                ]
+            )
 
         if kind == "artists":
-            queryset = (
-                Artist.objects
-                .filter(is_active=True)
-                .select_related("category")
-            )
+            queryset = Artist.objects.filter(is_active=True).select_related("category")
 
             if category_id:
                 queryset = queryset.filter(category_id=category_id)
 
             queryset = queryset.order_by("name")
 
-            return Response([
-                {
-                    "id": str(obj.id),
-                    "name": obj.name,
-                    "categoryId": (
-                        str(obj.category_id)
-                        if obj.category_id else None
-                    ),
-                }
-                for obj in queryset
-            ])
+            return Response(
+                [
+                    {
+                        "id": str(obj.id),
+                        "name": obj.name,
+                        "categoryId": (
+                            str(obj.category_id) if obj.category_id else None
+                        ),
+                    }
+                    for obj in queryset
+                ]
+            )
 
         return Response(
             {"detail": "Unknown master."},
@@ -649,9 +562,7 @@ class MasterListView(APIView):
 
     def get(self, request, kind):
         if not request.user.can("masters", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         q = request.query_params.get("q")
         status_filter = request.query_params.get("status")
@@ -673,15 +584,11 @@ class MasterListView(APIView):
             queryset = Category.objects.all()
 
             if q:
-                queryset = queryset.filter(
-                    name__icontains=q
-                )
+                queryset = queryset.filter(name__icontains=q)
 
             if status_filter:
                 queryset = queryset.filter(
-                    is_active=(
-                        status_filter.lower() == "active"
-                    )
+                    is_active=(status_filter.lower() == "active")
                 )
 
             queryset = queryset.order_by("name")
@@ -694,11 +601,7 @@ class MasterListView(APIView):
                     "id": str(obj.id),
                     "name": obj.name,
                     "description": obj.description,
-                    "status": (
-                        "Active"
-                        if obj.is_active
-                        else "Inactive"
-                    ),
+                    "status": ("Active" if obj.is_active else "Inactive"),
                 }
                 for obj in page_obj.object_list
             ]
@@ -707,28 +610,18 @@ class MasterListView(APIView):
         # SUBCATEGORIES
         # ==================================================
         elif kind == "subcategories":
-            queryset = (
-                Subcategory.objects
-                .select_related("category")
-                .all()
-            )
+            queryset = Subcategory.objects.select_related("category").all()
 
             if q:
-                queryset = queryset.filter(
-                    name__icontains=q
-                )
+                queryset = queryset.filter(name__icontains=q)
 
             if status_filter:
                 queryset = queryset.filter(
-                    is_active=(
-                        status_filter.lower() == "active"
-                    )
+                    is_active=(status_filter.lower() == "active")
                 )
 
             if category_id:
-                queryset = queryset.filter(
-                    category_id=category_id
-                )
+                queryset = queryset.filter(category_id=category_id)
 
             queryset = queryset.order_by("name")
 
@@ -742,11 +635,7 @@ class MasterListView(APIView):
                     "categoryId": str(obj.category_id),
                     "categoryName": obj.category.name,
                     "description": obj.description,
-                    "status": (
-                        "Active"
-                        if obj.is_active
-                        else "Inactive"
-                    ),
+                    "status": ("Active" if obj.is_active else "Inactive"),
                 }
                 for obj in page_obj.object_list
             ]
@@ -755,28 +644,18 @@ class MasterListView(APIView):
         # ARTISTS
         # ==================================================
         elif kind == "artists":
-            queryset = (
-                Artist.objects
-                .select_related("category")
-                .all()
-            )
+            queryset = Artist.objects.select_related("category").all()
 
             if q:
-                queryset = queryset.filter(
-                    name__icontains=q
-                )
+                queryset = queryset.filter(name__icontains=q)
 
             if status_filter:
                 queryset = queryset.filter(
-                    is_active=(
-                        status_filter.lower() == "active"
-                    )
+                    is_active=(status_filter.lower() == "active")
                 )
 
             if category_id:
-                queryset = queryset.filter(
-                    category_id=category_id
-                )
+                queryset = queryset.filter(category_id=category_id)
 
             queryset = queryset.order_by("name")
 
@@ -787,22 +666,10 @@ class MasterListView(APIView):
                 {
                     "id": str(obj.id),
                     "name": obj.name,
-                    "categoryId": (
-                        str(obj.category_id)
-                        if obj.category_id
-                        else None
-                    ),
-                    "categoryName": (
-                        obj.category.name
-                        if obj.category_id
-                        else None
-                    ),
+                    "categoryId": (str(obj.category_id) if obj.category_id else None),
+                    "categoryName": (obj.category.name if obj.category_id else None),
                     "nationality": obj.nationality,
-                    "status": (
-                        "Active"
-                        if obj.is_active
-                        else "Inactive"
-                    ),
+                    "status": ("Active" if obj.is_active else "Inactive"),
                 }
                 for obj in page_obj.object_list
             ]
@@ -813,18 +680,18 @@ class MasterListView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response({
-            "count": paginator.count,
-            "page": page_obj.number,
-            "pageSize": page_size,
-            "results": results,
-        })
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page_obj.number,
+                "pageSize": page_size,
+                "results": results,
+            }
+        )
 
     def post(self, request, kind):
         if not request.user.can("masters", "create"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         name = request.data.get("name", "").strip()
 
@@ -838,24 +705,15 @@ class MasterListView(APIView):
         # CATEGORIES
         # ==================================================
         if kind == "categories":
-            if Category.objects.filter(
-                name__iexact=name
-            ).exists():
+            if Category.objects.filter(name__iexact=name).exists():
                 return Response(
-                    {
-                        "name": [
-                            "This name already exists."
-                        ]
-                    },
+                    {"name": ["This name already exists."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             category = Category.objects.create(
                 name=name,
-                description=request.data.get(
-                    "description",
-                    ""
-                ),
+                description=request.data.get("description", ""),
                 is_active=True,
             )
 
@@ -877,11 +735,7 @@ class MasterListView(APIView):
 
             if not category_id:
                 return Response(
-                    {
-                        "categoryId": [
-                            "This field is required."
-                        ]
-                    },
+                    {"categoryId": ["This field is required."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -889,11 +743,7 @@ class MasterListView(APIView):
                 category = Category.objects.get(pk=category_id)
             except Category.DoesNotExist:
                 return Response(
-                    {
-                        "categoryId": [
-                            "Category does not exist."
-                        ]
-                    },
+                    {"categoryId": ["Category does not exist."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -902,21 +752,14 @@ class MasterListView(APIView):
                 name__iexact=name,
             ).exists():
                 return Response(
-                    {
-                        "name": [
-                            "This name already exists."
-                        ]
-                    },
+                    {"name": ["This name already exists."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             subcategory = Subcategory.objects.create(
                 name=name,
                 category=category,
-                description=request.data.get(
-                    "description",
-                    ""
-                ),
+                description=request.data.get("description", ""),
                 is_active=True,
             )
 
@@ -940,11 +783,7 @@ class MasterListView(APIView):
 
             if not category_id:
                 return Response(
-                    {
-                        "categoryId": [
-                            "This field is required."
-                        ]
-                    },
+                    {"categoryId": ["This field is required."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -952,11 +791,7 @@ class MasterListView(APIView):
                 category = Category.objects.get(pk=category_id)
             except Category.DoesNotExist:
                 return Response(
-                    {
-                        "categoryId": [
-                            "Category does not exist."
-                        ]
-                    },
+                    {"categoryId": ["Category does not exist."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -965,21 +800,14 @@ class MasterListView(APIView):
                 name__iexact=name,
             ).exists():
                 return Response(
-                    {
-                        "name": [
-                            "This name already exists."
-                        ]
-                    },
+                    {"name": ["This name already exists."]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             artist = Artist.objects.create(
                 name=name,
                 category=category,
-                nationality=request.data.get(
-                    "nationality",
-                    ""
-                ),
+                nationality=request.data.get("nationality", ""),
                 is_active=True,
             )
 
@@ -1006,9 +834,7 @@ class MasterDetailView(APIView):
 
     def get(self, request, kind, pk):
         if not request.user.can("masters", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         # ==============================================
         # CATEGORY
@@ -1022,74 +848,60 @@ class MasterDetailView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            return Response({
-                "id": str(obj.id),
-                "name": obj.name,
-                "description": obj.description,
-                "status": (
-                    "Active" if obj.is_active else "Inactive"
-                ),
-            })
+            return Response(
+                {
+                    "id": str(obj.id),
+                    "name": obj.name,
+                    "description": obj.description,
+                    "status": ("Active" if obj.is_active else "Inactive"),
+                }
+            )
 
         # ==============================================
         # SUBCATEGORY
         # ==============================================
         if kind == "subcategories":
             try:
-                obj = (
-                    Subcategory.objects
-                    .select_related("category")
-                    .get(pk=pk)
-                )
+                obj = Subcategory.objects.select_related("category").get(pk=pk)
             except Subcategory.DoesNotExist:
                 return Response(
                     {"detail": "Record not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            return Response({
-                "id": str(obj.id),
-                "name": obj.name,
-                "categoryId": str(obj.category_id),
-                "categoryName": obj.category.name,
-                "description": obj.description,
-                "status": (
-                    "Active" if obj.is_active else "Inactive"
-                ),
-            })
+            return Response(
+                {
+                    "id": str(obj.id),
+                    "name": obj.name,
+                    "categoryId": str(obj.category_id),
+                    "categoryName": obj.category.name,
+                    "description": obj.description,
+                    "status": ("Active" if obj.is_active else "Inactive"),
+                }
+            )
 
         # ==============================================
         # ARTIST
         # ==============================================
         if kind == "artists":
             try:
-                obj = (
-                    Artist.objects
-                    .select_related("category")
-                    .get(pk=pk)
-                )
+                obj = Artist.objects.select_related("category").get(pk=pk)
             except Artist.DoesNotExist:
                 return Response(
                     {"detail": "Record not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            return Response({
-                "id": str(obj.id),
-                "name": obj.name,
-                "categoryId": (
-                    str(obj.category_id)
-                    if obj.category_id else None
-                ),
-                "categoryName": (
-                    obj.category.name
-                    if obj.category_id else None
-                ),
-                "nationality": obj.nationality,
-                "status": (
-                    "Active" if obj.is_active else "Inactive"
-                ),
-            })
+            return Response(
+                {
+                    "id": str(obj.id),
+                    "name": obj.name,
+                    "categoryId": (str(obj.category_id) if obj.category_id else None),
+                    "categoryName": (obj.category.name if obj.category_id else None),
+                    "nationality": obj.nationality,
+                    "status": ("Active" if obj.is_active else "Inactive"),
+                }
+            )
 
         return Response(
             {"detail": "Unknown master."},
@@ -1098,9 +910,7 @@ class MasterDetailView(APIView):
 
     def patch(self, request, kind, pk):
         if not request.user.can("masters", "edit"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         # ==================================================
         # CATEGORY
@@ -1119,9 +929,11 @@ class MasterDetailView(APIView):
             if name is not None:
                 name = name.strip()
 
-                if Category.objects.filter(
-                    name__iexact=name
-                ).exclude(pk=obj.pk).exists():
+                if (
+                    Category.objects.filter(name__iexact=name)
+                    .exclude(pk=obj.pk)
+                    .exists()
+                ):
                     return Response(
                         {"name": ["This name already exists."]},
                         status=status.HTTP_400_BAD_REQUEST,
@@ -1133,29 +945,25 @@ class MasterDetailView(APIView):
                 obj.description = request.data["description"]
 
             if "status" in request.data:
-                obj.is_active = (
-                    request.data["status"].lower() == "active"
-                )
+                obj.is_active = request.data["status"].lower() == "active"
 
             obj.save()
 
-            return Response({
-                "id": str(obj.id),
-                "name": obj.name,
-                "description": obj.description,
-                "status": "Active" if obj.is_active else "Inactive",
-            })
+            return Response(
+                {
+                    "id": str(obj.id),
+                    "name": obj.name,
+                    "description": obj.description,
+                    "status": "Active" if obj.is_active else "Inactive",
+                }
+            )
 
         # ==================================================
         # SUBCATEGORY
         # ==================================================
         if kind == "subcategories":
             try:
-                obj = (
-                    Subcategory.objects
-                    .select_related("category")
-                    .get(pk=pk)
-                )
+                obj = Subcategory.objects.select_related("category").get(pk=pk)
             except Subcategory.DoesNotExist:
                 return Response(
                     {"detail": "Record not found."},
@@ -1166,25 +974,23 @@ class MasterDetailView(APIView):
 
             if "categoryId" in request.data:
                 try:
-                    new_category = Category.objects.get(
-                        pk=request.data["categoryId"]
-                    )
+                    new_category = Category.objects.get(pk=request.data["categoryId"])
                 except Category.DoesNotExist:
                     return Response(
-                        {
-                            "categoryId": [
-                                "Category does not exist."
-                            ]
-                        },
+                        {"categoryId": ["Category does not exist."]},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
             name = request.data.get("name", obj.name).strip()
 
-            if Subcategory.objects.filter(
-                category=new_category,
-                name__iexact=name,
-            ).exclude(pk=obj.pk).exists():
+            if (
+                Subcategory.objects.filter(
+                    category=new_category,
+                    name__iexact=name,
+                )
+                .exclude(pk=obj.pk)
+                .exists()
+            ):
                 return Response(
                     {"name": ["This name already exists."]},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -1197,31 +1003,27 @@ class MasterDetailView(APIView):
                 obj.description = request.data["description"]
 
             if "status" in request.data:
-                obj.is_active = (
-                    request.data["status"].lower() == "active"
-                )
+                obj.is_active = request.data["status"].lower() == "active"
 
             obj.save()
 
-            return Response({
-                "id": str(obj.id),
-                "name": obj.name,
-                "categoryId": str(obj.category_id),
-                "categoryName": obj.category.name,
-                "description": obj.description,
-                "status": "Active" if obj.is_active else "Inactive",
-            })
+            return Response(
+                {
+                    "id": str(obj.id),
+                    "name": obj.name,
+                    "categoryId": str(obj.category_id),
+                    "categoryName": obj.category.name,
+                    "description": obj.description,
+                    "status": "Active" if obj.is_active else "Inactive",
+                }
+            )
 
         # ==================================================
         # ARTIST
         # ==================================================
         if kind == "artists":
             try:
-                obj = (
-                    Artist.objects
-                    .select_related("category")
-                    .get(pk=pk)
-                )
+                obj = Artist.objects.select_related("category").get(pk=pk)
             except Artist.DoesNotExist:
                 return Response(
                     {"detail": "Record not found."},
@@ -1232,25 +1034,23 @@ class MasterDetailView(APIView):
 
             if "categoryId" in request.data:
                 try:
-                    new_category = Category.objects.get(
-                        pk=request.data["categoryId"]
-                    )
+                    new_category = Category.objects.get(pk=request.data["categoryId"])
                 except Category.DoesNotExist:
                     return Response(
-                        {
-                            "categoryId": [
-                                "Category does not exist."
-                            ]
-                        },
+                        {"categoryId": ["Category does not exist."]},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
             name = request.data.get("name", obj.name).strip()
 
-            if Artist.objects.filter(
-                category=new_category,
-                name__iexact=name,
-            ).exclude(pk=obj.pk).exists():
+            if (
+                Artist.objects.filter(
+                    category=new_category,
+                    name__iexact=name,
+                )
+                .exclude(pk=obj.pk)
+                .exists()
+            ):
                 return Response(
                     {"name": ["This name already exists."]},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -1263,20 +1063,20 @@ class MasterDetailView(APIView):
                 obj.nationality = request.data["nationality"]
 
             if "status" in request.data:
-                obj.is_active = (
-                    request.data["status"].lower() == "active"
-                )
+                obj.is_active = request.data["status"].lower() == "active"
 
             obj.save()
 
-            return Response({
-                "id": str(obj.id),
-                "name": obj.name,
-                "categoryId": str(obj.category_id),
-                "categoryName": obj.category.name,
-                "nationality": obj.nationality,
-                "status": "Active" if obj.is_active else "Inactive",
-            })
+            return Response(
+                {
+                    "id": str(obj.id),
+                    "name": obj.name,
+                    "categoryId": str(obj.category_id),
+                    "categoryName": obj.category.name,
+                    "nationality": obj.nationality,
+                    "status": "Active" if obj.is_active else "Inactive",
+                }
+            )
 
         return Response(
             {"detail": "Unknown master."},

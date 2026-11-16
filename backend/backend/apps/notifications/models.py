@@ -5,9 +5,9 @@ from django.db import models
 
 
 class Notification(models.Model):
-
     class Type(models.TextChoices):
         FOLLOWUP_DUE = "FOLLOWUP_DUE", "FOLLOWUP_DUE"
+        INQUIRY_ASSIGNED = "INQUIRY_ASSIGNED", "INQUIRY_ASSIGNED"
 
     id = models.UUIDField(
         primary_key=True,
@@ -47,6 +47,8 @@ class Notification(models.Model):
         null=True,
         blank=True,
     )
+    sale_id = models.UUIDField(null=True, blank=True)
+    order_id = models.UUIDField(null=True, blank=True)
 
     tab = models.CharField(
         max_length=50,

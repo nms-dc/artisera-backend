@@ -1,4 +1,3 @@
-
 from rest_framework import serializers
 from accounts.models import (
     User,
@@ -14,7 +13,7 @@ class UserOptionSerializer(serializers.ModelSerializer):
 
 
 class CurrentUserSerializer(serializers.ModelSerializer):
-    role = serializers.CharField(source="role_id", read_only=True)
+    role = serializers.CharField(source="role.name", read_only=True)
     permissions = serializers.SerializerMethodField()
 
     class Meta:
@@ -29,6 +28,7 @@ class CurrentUserSerializer(serializers.ModelSerializer):
 
     def get_permissions(self, obj):
         return obj.permissions_map
+
 
 class UserListSerializer(serializers.ModelSerializer):
     roleId = serializers.CharField(source="role_id", read_only=True)
@@ -54,10 +54,7 @@ class UserListSerializer(serializers.ModelSerializer):
 
 class UserCreateSerializer(serializers.ModelSerializer):
     roleId = serializers.CharField(write_only=True)
-    status = serializers.ChoiceField(
-        choices=["Active", "Inactive"],
-        write_only=True
-    )
+    status = serializers.ChoiceField(choices=["Active", "Inactive"], write_only=True)
 
     class Meta:
         model = User
@@ -74,9 +71,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():
-            raise serializers.ValidationError(
-                "A user with this email already exists."
-            )
+            raise serializers.ValidationError("A user with this email already exists.")
         return value
 
     def validate_roleId(self, value):
@@ -118,14 +113,10 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_email(self, value):
-        queryset = User.objects.filter(
-            email__iexact=value
-        ).exclude(pk=self.instance.pk)
+        queryset = User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk)
 
         if queryset.exists():
-            raise serializers.ValidationError(
-                "A user with this email already exists."
-            )
+            raise serializers.ValidationError("A user with this email already exists.")
 
         return value
 
@@ -133,9 +124,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         from accounts.models import Role
 
         if not Role.objects.filter(id=value).exists():
-            raise serializers.ValidationError(
-                "Role does not exist."
-            )
+            raise serializers.ValidationError("Role does not exist.")
 
         return value
 
@@ -153,9 +142,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
         # Update status only if supplied.
         if status_value is not None:
-            instance.is_active = (
-                status_value == "Active"
-            )
+            instance.is_active = status_value == "Active"
 
         instance.save()
         return instance
@@ -190,9 +177,7 @@ class RoleListSerializer(serializers.ModelSerializer):
 
 
 class RoleCreateSerializer(serializers.ModelSerializer):
-    status = serializers.ChoiceField(
-        choices=["Active", "Inactive"]
-    )
+    status = serializers.ChoiceField(choices=["Active", "Inactive"])
     permissions = serializers.JSONField()
 
     class Meta:
@@ -208,9 +193,7 @@ class RoleCreateSerializer(serializers.ModelSerializer):
 
     def validate_name(self, value):
         if Role.objects.filter(name__iexact=value).exists():
-            raise serializers.ValidationError(
-                "This role already exists."
-            )
+            raise serializers.ValidationError("This role already exists.")
         return value
 
     def validate_permissions(self, value):
@@ -237,14 +220,10 @@ class RoleUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_name(self, value):
-        queryset = Role.objects.filter(
-            name__iexact=value
-        ).exclude(pk=self.instance.pk)
+        queryset = Role.objects.filter(name__iexact=value).exclude(pk=self.instance.pk)
 
         if queryset.exists():
-            raise serializers.ValidationError(
-                "This role already exists."
-            )
+            raise serializers.ValidationError("This role already exists.")
 
         return value
 
@@ -253,17 +232,13 @@ class RoleUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         # Admin role can never be deactivated.
-        if (
-            self.instance.is_admin_role
-            and attrs.get("status") == Role.Status.INACTIVE
-        ):
-            raise serializers.ValidationError({
-                "status": [
-                    "The Admin role cannot be deactivated."
-                ]
-            })
+        if self.instance.is_admin_role and attrs.get("status") == Role.Status.INACTIVE:
+            raise serializers.ValidationError(
+                {"status": ["The Admin role cannot be deactivated."]}
+            )
 
         return attrs
+
 
 """
 
@@ -414,4 +389,3 @@ class DailyVisitsSerializer(serializers.ModelSerializer):
         fields = ['count','date']
 
 """
-

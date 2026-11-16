@@ -1,5 +1,9 @@
 import uuid
-from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.contrib.auth.models import (
+    AbstractBaseUser,
+    BaseUserManager,
+    PermissionsMixin,
+)
 from django.db import models
 
 # --------------------------------------------------------------------------
@@ -53,12 +57,16 @@ class Role(models.Model):
         INACTIVE = "Inactive", "Inactive"
 
     # String PK so the API can expose 'ADMIN', 'RM' and UUIDs through one `id`.
-    id = models.CharField(primary_key=True, max_length=64, default=new_role_id, editable=False)
+    id = models.CharField(
+        primary_key=True, max_length=64, default=new_role_id, editable=False
+    )
     # Case-insensitive duplicates ("sales" vs "Sales") are rejected in the
     # serializer (name__iexact); the DB constraint covers the exact match.
     name = models.CharField(max_length=100, unique=True)
     description = models.CharField(max_length=255, blank=True, default="")
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.ACTIVE
+    )
     permissions = models.JSONField(default=dict, blank=True)
     is_system = models.BooleanField(default=False, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -88,6 +96,20 @@ class Role(models.Model):
             self.status = self.Status.ACTIVE
             self.is_system = True
         super().save(*args, **kwargs)
+
+
+PERMISSION_ACTIONS = ("view", "create", "edit", "delete", "assignRm")
+
+# Resources that must always appear in the permissions payload
+NEW_PERMISSION_RESOURCES = ("sales", "orders", "shipments", "certificates")
+
+
+def _full_access():
+    return {action: True for action in PERMISSION_ACTIONS}
+
+
+def _no_access():
+    return {action: False for action in PERMISSION_ACTIONS}
 
 
 # --------------------------------------------------------------------------
@@ -124,11 +146,13 @@ class User(AbstractBaseUser, PermissionsMixin):
     name = models.CharField(max_length=150, default="unknown")
     email = models.EmailField(max_length=255, unique=True)
     phone = models.CharField(max_length=20, blank=True, default="")
-    role = models.ForeignKey(Role, on_delete=models.PROTECT, related_name="users",default="RM")
+    role = models.ForeignKey(
+        Role, on_delete=models.PROTECT, related_name="users", default="RM"
+    )
     # API "status" ('Active'/'Inactive') maps to this boolean; see `status` below.
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True,null=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = UserManager()
@@ -155,11 +179,6 @@ class User(AbstractBaseUser, PermissionsMixin):
     def role_name(self):
         return self.role.name
 
-    @property
-    def permissions_map(self):
-        """Shape returned by A01 / A03."""
-        return self.role.effective_permissions
-
     def can(self, resource, action):
         """Used by the DRF permission class: user.can('inquiries', 'assignRm')."""
         return bool(self.permissions_map.get(resource, {}).get(action))
@@ -173,9 +192,32 @@ class User(AbstractBaseUser, PermissionsMixin):
     def is_staff(self):
         return self.is_admin or self.is_superuser
 
+    @property
+    def permissions_map(self):
+        """Shape returned by A01 / A03."""
+        perms = {
+            resource: dict(actions)
+            for resource, actions in (self.role.effective_permissions or {}).items()
+        }
+
+        if self.is_admin:
+            # Admin = all true for every resource
+            for resource in set(perms) | set(NEW_PERMISSION_RESOURCES):
+                perms[resource] = _full_access()
+            return perms
+
+        for resource in NEW_PERMISSION_RESOURCES:
+            existing = perms.get(resource, {})
+            perms[resource] = {
+                action: bool(existing.get(action, False))
+                for action in PERMISSION_ACTIONS
+            }
+        return perms
+
     def save(self, *args, **kwargs):
         self.email = self.email.lower()
         super().save(*args, **kwargs)
+
 
 class Address(models.Model):
     pass

@@ -1,14 +1,7 @@
 from rest_framework import serializers
 
 from accounts.models import User
-from .models import (
-    Artist,
-    Category,
-    Customer,
-    Inquiry,
-    Subcategory,
-    InquiryActivity
-)
+from .models import Artist, Category, Customer, Inquiry, Subcategory, InquiryActivity
 from decimal import Decimal
 from django.db.models import Q, Sum
 
@@ -20,55 +13,43 @@ class InquiryListSerializer(serializers.ModelSerializer):
     subcategory = serializers.SerializerMethodField()
     artist = serializers.SerializerMethodField()
     rm = serializers.SerializerMethodField()
+    repeatProspect = serializers.SerializerMethodField()
+    sale = serializers.SerializerMethodField()
 
-    inquiryType = serializers.CharField(
-        source="inquiry_type",
+    value = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        coerce_to_string=False,
         read_only=True,
     )
+
+    inquiryType = serializers.CharField(source="inquiry_type", read_only=True)
     assignedOn = serializers.DateTimeField(
-        source="assigned_on",
-        read_only=True,
+        source="assigned_on", read_only=True, allow_null=True
     )
     nextFollowUp = serializers.DateTimeField(
-        source="next_follow_up",
-        read_only=True,
+        source="next_follow_up", read_only=True, allow_null=True
     )
     nextAction = serializers.CharField(
-        source="next_action",
-        read_only=True,
-        allow_null=True,
+        source="next_action", read_only=True, allow_null=True
     )
     lastContact = serializers.DateTimeField(
-        source="last_contact",
-        read_only=True,
+        source="last_contact", read_only=True, allow_null=True
     )
     closedAt = serializers.DateTimeField(
-        source="closed_at",
-        read_only=True,
+        source="closed_at", read_only=True, allow_null=True
     )
     expectedTimeline = serializers.CharField(
-        source="expected_timeline",
-        read_only=True,
-        allow_null=True,
+        source="expected_timeline", read_only=True, allow_null=True
     )
     budgetRange = serializers.CharField(
-        source="budget_range",
-        read_only=True,
-        allow_null=True,
+        source="budget_range", read_only=True, allow_null=True
     )
     artStyle = serializers.CharField(
-        source="art_style",
-        read_only=True,
-        allow_null=True,
+        source="art_style", read_only=True, allow_null=True
     )
-    createdAt = serializers.DateTimeField(
-        source="created_at",
-        read_only=True,
-    )
-    updatedAt = serializers.DateTimeField(
-        source="updated_at",
-        read_only=True,
-    )
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+    updatedAt = serializers.DateTimeField(source="updated_at", read_only=True)
 
     class Meta:
         model = Inquiry
@@ -96,61 +77,65 @@ class InquiryListSerializer(serializers.ModelSerializer):
             "expectedTimeline",
             "budgetRange",
             "artStyle",
+            "repeatProspect",
+            "sale",
             "createdAt",
             "updatedAt",
         ]
 
+    @staticmethod
+    def _ref(obj):
+        return {"id": str(obj.id), "name": obj.name} if obj else None
+
     def get_customer(self, obj):
-        customer = obj.customer
+        c = obj.customer
+        if not c:
+            return None
         return {
-            "id": str(customer.id),
-            "code": customer.code,
-            "name": customer.name,
-            "phone": customer.phone,
-            "email": customer.email,
-            "location": customer.location,
-            "state": customer.state,
+            "id": str(c.id),
+            "code": c.code,
+            "name": c.name,
+            "phone": c.phone,
+            "email": c.email,
+            "location": c.location,
+            "state": c.state,
+            "address1": c.address1,
+            "address2": c.address2 or None,
+            "pin": c.pin,
+            "country": c.country,
         }
 
     def get_category(self, obj):
-        return {
-            "id": str(obj.category.id),
-            "name": obj.category.name,
-        }
+        return self._ref(obj.category)
 
     def get_subcategory(self, obj):
-        return {
-            "id": str(obj.subcategory.id),
-            "name": obj.subcategory.name,
-        }
+        return self._ref(obj.subcategory)
 
     def get_artist(self, obj):
-        if not obj.artist:
-            return None
-
-        return {
-            "id": str(obj.artist.id),
-            "name": obj.artist.name,
-        }
+        return self._ref(obj.artist)
 
     def get_rm(self, obj):
-        if not obj.rm:
-            return None
+        return self._ref(obj.rm)
 
-        return {
-            "id": str(obj.rm.id),
-            "name": obj.rm.name,
-        }
+    def get_repeatProspect(self, obj):
+        # Prefer the annotation set in the view (no extra query per row)
+        annotated = getattr(obj, "repeat_prospect", None)
+        if annotated is not None:
+            return annotated
+        return (
+            Inquiry.objects.filter(customer_id=obj.customer_id)
+            .exclude(pk=obj.pk)
+            .exists()
+        )
+
+    def get_sale(self, obj):
+        return None  # until a Sale model exists
 
 
 class InquiryCreateSerializer(serializers.Serializer):
     customerId = serializers.UUIDField()
-    inquiryType = serializers.ChoiceField(
-        choices=Inquiry.InquiryType.choices
-    )
-    source = serializers.ChoiceField(
-        choices=Inquiry.Source.choices
-    )
+    inquiryType = serializers.ChoiceField(choices=Inquiry.InquiryType.choices)
+    source = serializers.ChoiceField(choices=Inquiry.Source.choices)
     requirement = serializers.CharField(max_length=500)
     quantity = serializers.IntegerField(min_value=1)
     value = serializers.DecimalField(
@@ -192,41 +177,34 @@ class InquiryCreateSerializer(serializers.Serializer):
 
     def validate_customerId(self, value):
         if not Customer.objects.filter(id=value).exists():
-            raise serializers.ValidationError(
-                "Customer does not exist."
-            )
+            raise serializers.ValidationError("Customer does not exist.")
         return value
 
     def validate_categoryId(self, value):
         if not Category.objects.filter(id=value).exists():
-            raise serializers.ValidationError(
-                "Category does not exist."
-            )
+            raise serializers.ValidationError("Category does not exist.")
         return value
 
     def validate_subcategoryId(self, value):
         if not Subcategory.objects.filter(id=value).exists():
-            raise serializers.ValidationError(
-                "Subcategory does not exist."
-            )
+            raise serializers.ValidationError("Subcategory does not exist.")
         return value
 
     def validate_artistId(self, value):
         if value and not Artist.objects.filter(id=value).exists():
-            raise serializers.ValidationError(
-                "Artist does not exist."
-            )
+            raise serializers.ValidationError("Artist does not exist.")
         return value
 
     def validate_rmId(self, value):
-        if value and not User.objects.filter(
-            id=value,
-            is_active=True,
-            role_id="RM",
-        ).exists():
-            raise serializers.ValidationError(
-                "Active RM does not exist."
-            )
+        if (
+            value
+            and not User.objects.filter(
+                id=value,
+                is_active=True,
+                role_id="RM",
+            ).exists()
+        ):
+            raise serializers.ValidationError("Active RM does not exist.")
         return value
 
     def validate(self, attrs):
@@ -237,11 +215,13 @@ class InquiryCreateSerializer(serializers.Serializer):
             id=subcategory_id,
             category_id=category_id,
         ).exists():
-            raise serializers.ValidationError({
-                "subcategoryId": [
-                    "Subcategory does not belong to the selected category."
-                ]
-            })
+            raise serializers.ValidationError(
+                {
+                    "subcategoryId": [
+                        "Subcategory does not belong to the selected category."
+                    ]
+                }
+            )
 
         return attrs
 
@@ -367,21 +347,15 @@ class CustomerListSerializer(serializers.ModelSerializer):
         ).count()
 
     def get_wonInquiries(self, obj):
-        return obj.inquiries.filter(
-            status=Inquiry.Status.WON
-        ).count()
+        return obj.inquiries.filter(status=Inquiry.Status.WON).count()
 
     def get_totalValue(self, obj):
-        total = obj.inquiries.aggregate(
-            total=Sum("value")
-        )["total"]
+        total = obj.inquiries.aggregate(total=Sum("value"))["total"]
 
         return total or 0
 
     def get_lastActivityAt(self, obj):
-        last_inquiry = obj.inquiries.order_by(
-            "-updated_at"
-        ).first()
+        last_inquiry = obj.inquiries.order_by("-updated_at").first()
 
         if not last_inquiry:
             return None
@@ -415,16 +389,10 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         email = attrs.get("email")
 
         if phone and Customer.objects.filter(phone=phone).exists():
-            errors["phone"] = [
-                "A customer with this phone number already exists."
-            ]
+            errors["phone"] = ["A customer with this phone number already exists."]
 
-        if email and Customer.objects.filter(
-            email__iexact=email
-        ).exists():
-            errors["email"] = [
-                "A customer with this email already exists."
-            ]
+        if email and Customer.objects.filter(email__iexact=email).exists():
+            errors["email"] = ["A customer with this email already exists."]
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -433,19 +401,14 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         last_customer = (
-            Customer.objects
-            .filter(code__startswith="CUST-")
-            .order_by("-code")
-            .first()
+            Customer.objects.filter(code__startswith="CUST-").order_by("-code").first()
         )
 
         next_number = 1
 
         if last_customer:
             try:
-                next_number = int(
-                    last_customer.code.split("-")[-1]
-                ) + 1
+                next_number = int(last_customer.code.split("-")[-1]) + 1
             except (ValueError, IndexError):
                 pass
 
@@ -457,6 +420,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             source="Direct",
             **validated_data,
         )
+
 
 class CustomerUpdateSerializer(serializers.ModelSerializer):
     customerType = serializers.CharField(
@@ -495,8 +459,7 @@ class CustomerUpdateSerializer(serializers.ModelSerializer):
             return value
 
         exists = (
-            Customer.objects
-            .filter(email__iexact=value)
+            Customer.objects.filter(email__iexact=value)
             .exclude(pk=self.instance.pk)
             .exists()
         )
@@ -513,10 +476,7 @@ class CustomerUpdateSerializer(serializers.ModelSerializer):
             return value
 
         exists = (
-            Customer.objects
-            .filter(phone=value)
-            .exclude(pk=self.instance.pk)
-            .exists()
+            Customer.objects.filter(phone=value).exclude(pk=self.instance.pk).exists()
         )
 
         if exists:
