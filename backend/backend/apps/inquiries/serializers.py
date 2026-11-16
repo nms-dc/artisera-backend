@@ -208,48 +208,63 @@ class InquiryCreateSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        category_id = attrs["categoryId"]
-        subcategory_id = attrs["subcategoryId"]
+        category_id = attrs.get("categoryId")
+        subcategory_id = attrs.get("subcategoryId")
 
-        if not Subcategory.objects.filter(
-            id=subcategory_id,
-            category_id=category_id,
-        ).exists():
-            raise serializers.ValidationError(
-                {
-                    "subcategoryId": [
-                        "Subcategory does not belong to the selected category."
-                    ]
-                }
-            )
+        # On PATCH, fall back to the existing inquiry's values
+        instance = self.context.get("instance")
+        if instance is not None:
+            category_id = category_id or instance.category_id
+            subcategory_id = subcategory_id or instance.subcategory_id
 
+        if category_id and subcategory_id:
+            if not Subcategory.objects.filter(
+                id=subcategory_id, category_id=category_id
+            ).exists():
+                raise serializers.ValidationError(
+                    {
+                        "subcategoryId": [
+                            "Subcategory does not belong to the selected category."
+                        ]
+                    }
+                )
         return attrs
 
 
 class InquiryActivitySerializer(serializers.ModelSerializer):
-    createdBy = serializers.SerializerMethodField()
+    inquiryId = serializers.SerializerMethodField()
+    kind = serializers.CharField(source="action", read_only=True)
+    method = serializers.SerializerMethodField()
+    text = serializers.CharField(source="description", read_only=True)
+    nextFollowUp = serializers.SerializerMethodField()
+    by = serializers.SerializerMethodField()
+    at = serializers.DateTimeField(source="created_at", read_only=True)
 
     class Meta:
         model = InquiryActivity
         fields = [
             "id",
-            "action",
-            "description",
-            "metadata",
-            "createdBy",
-            "created_at",
+            "inquiryId",
+            "kind",
+            "method",
+            "text",
+            "nextFollowUp",
+            "by",
+            "at",
         ]
 
-    def get_createdBy(self, obj):
-        if not obj.created_by:
-            return None
+    def get_inquiryId(self, obj):
+        return str(obj.inquiry_id)
 
+    def get_method(self, obj):
+        return (obj.metadata or {}).get("method")
+
+    def get_nextFollowUp(self, obj):
+        return (obj.metadata or {}).get("nextFollowUp")
+
+    def get_by(self, obj):
         user = obj.created_by
-
-        return {
-            "id": str(user.id),
-            "name": f"{user.email}".strip(),
-        }
+        return {"id": str(user.id), "name": user.name} if user else None
 
 
 class CustomerListSerializer(serializers.ModelSerializer):

@@ -18,9 +18,8 @@ urlpatterns = [
     # ==================================================
     # Inquiries - fixed paths
     # ==================================================
-    path("", InquiryListView.as_view(), name="inquiry-list"),
-    path("counts/", InquiryCountsView.as_view(), name="inquiry-counts"),
-
+    path("crm/inquiries/", InquiryListView.as_view(), name="inquiry-list"),
+    path("crm/inquiries/counts/", InquiryCountsView.as_view(), name="inquiry-counts"),
     # ==================================================
     # Customers
     # ==================================================
@@ -44,36 +43,34 @@ urlpatterns = [
         CustomerDetailView.as_view(),
         name="customer-detail",
     ),
-
     # ==================================================
     # Masters
     # ==================================================
     path(
-        "masters/<str:kind>/options/",
+        "common/<str:kind>/options/",
         MasterOptionsView.as_view(),
         name="master-options",
     ),
     path(
-        "masters/<str:kind>/<uuid:pk>/",
+        "common/<str:kind>/<uuid:pk>/",
         MasterDetailView.as_view(),
         name="master-detail",
     ),
     path(
-        "masters/<str:kind>/",
+        "common/<str:kind>/",
         MasterListView.as_view(),
         name="master-list",
     ),
-
     # ==================================================
     # Inquiry UUID routes
     # ==================================================
     path(
-        "<uuid:pk>/activities/",
+        "crm/inquiries/<uuid:pk>/activities/",
         InquiryActivityListView.as_view(),
         name="inquiry-activities",
     ),
     path(
-        "<uuid:pk>/",
+        "crm/inquiries/<uuid:pk>/",
         InquiryDetailView.as_view(),
         name="inquiry-detail",
     ),

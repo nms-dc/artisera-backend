@@ -171,25 +171,113 @@ class InquiryListView(APIView):
             }
         )
 
+    def post(self, request):
+        serializer = InquiryCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        data = serializer.validated_data
+        user = request.user
+
+        can_assign_rm = user.is_admin or user.can("inquiries", "assignRm")
+
+        if can_assign_rm:
+            rm_id = data.get("rmId")
+            priority = data.get("priority", Inquiry.Priority.NORMAL)
+        else:
+            rm_id = user.id
+            priority = Inquiry.Priority.NORMAL
+
+        # Generate the next inquiry code.
+        last_inquiry = (
+            Inquiry.objects.filter(code__startswith="INQ-").order_by("-code").first()
+        )
+        next_number = 1
+        if last_inquiry:
+            try:
+                next_number = int(last_inquiry.code.split("-")[-1]) + 1
+            except (ValueError, IndexError):
+                pass
+        code = f"INQ-{next_number:05d}"
+
+        inquiry = Inquiry.objects.create(
+            code=code,
+            customer_id=data["customerId"],
+            inquiry_type=data["inquiryType"],
+            requirement=data["requirement"],
+            quantity=data["quantity"],
+            value=data["value"],
+            category_id=data["categoryId"],
+            subcategory_id=data["subcategoryId"],
+            artist_id=data.get("artistId"),
+            source=data["source"],
+            priority=priority,
+            status=Inquiry.Status.TOUCHBASE,
+            rm_id=rm_id,
+            assigned_on=timezone.now() if rm_id else None,
+            notes=data.get("notes", ""),
+            expected_timeline=data.get("expectedTimeline", ""),
+            budget_range=data.get("budgetRange", ""),
+            art_style=data.get("artStyle", ""),
+        )
+
+        InquiryActivity.objects.create(
+            inquiry=inquiry,
+            action="created",
+            description="Inquiry created",
+            metadata={
+                "code": inquiry.code,
+                "status": inquiry.status,
+                "source": inquiry.source,
+            },
+            created_by=user,
+        )
+
+        inquiry = self.get_queryset(request, apply_tab=False, apply_status=False).get(
+            pk=inquiry.pk
+        )
+
+        return Response(InquiryListSerializer(inquiry).data, status=201)
+
 
 class InquiryDetailView(APIView):
 
-    def get(self, request, pk):
+    # Request key -> model field (used by PATCH)
+    FIELD_MAP = {
+        "customerId": "customer_id",
+        "inquiryType": "inquiry_type",
+        "requirement": "requirement",
+        "quantity": "quantity",
+        "value": "value",
+        "categoryId": "category_id",
+        "subcategoryId": "subcategory_id",
+        "artistId": "artist_id",
+        "source": "source",
+        "notes": "notes",
+        "expectedTimeline": "expected_timeline",
+        "budgetRange": "budget_range",
+        "artStyle": "art_style",
+    }
+
+    def _queryset(self, request):
         queryset = Inquiry.objects.select_related(
-            "customer",
-            "category",
-            "subcategory",
-            "artist",
-            "rm",
+            "customer", "category", "subcategory", "artist", "rm"
+        ).annotate(
+            repeat_prospect=Exists(
+                Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                    pk=OuterRef("pk")
+                )
+            )
         )
 
-        # Admin can view all inquiries.
-        # RM can only view inquiries assigned to them.
+        # Admin can access all inquiries.
+        # RM can only access inquiries assigned to them.
         if not request.user.is_admin:
             queryset = queryset.filter(rm=request.user)
 
-        inquiry = get_object_or_404(queryset, pk=pk)
+        return queryset
 
+    def get(self, request, pk):
+        inquiry = get_object_or_404(self._queryset(request), pk=pk)
         return Response(InquiryListSerializer(inquiry).data)
 
     def put(self, request, pk):
@@ -199,23 +287,16 @@ class InquiryDetailView(APIView):
         data = serializer.validated_data
         user = request.user
 
-        queryset = Inquiry.objects.all()
+        inquiry = get_object_or_404(self._queryset(request), pk=pk)
 
-        if not user.is_admin:
-            queryset = queryset.filter(rm=user)
-
-        inquiry = get_object_or_404(queryset, pk=pk)
-
-        can_assign_rm = user.is_admin or user.permissions.get("inquiries", {}).get(
-            "assignRm", False
-        )
+        can_assign_rm = user.is_admin or user.can("inquiries", "assignRm")
 
         if can_assign_rm:
             rm_id = data.get("rmId")
-            priority = data.get("priority", Inquiry.Priority.MEDIUM)
+            priority = data.get("priority", Inquiry.Priority.NORMAL)
         else:
             rm_id = user.id
-            priority = Inquiry.Priority.MEDIUM
+            priority = Inquiry.Priority.NORMAL
 
         # Update all editable fields.
         inquiry.customer_id = data["customerId"]
@@ -239,14 +320,40 @@ class InquiryDetailView(APIView):
 
         inquiry.save()
 
-        inquiry = Inquiry.objects.select_related(
-            "customer",
-            "category",
-            "subcategory",
-            "artist",
-            "rm",
-        ).get(pk=inquiry.pk)
+        inquiry = get_object_or_404(self._queryset(request), pk=pk)
+        return Response(InquiryListSerializer(inquiry).data)
 
+    def patch(self, request, pk):
+        user = request.user
+        inquiry = get_object_or_404(self._queryset(request), pk=pk)
+
+        serializer = InquiryCreateSerializer(
+            data=request.data,
+            partial=True,
+            context={"instance": inquiry},
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Only the fields that were sent are changed.
+        for key, field in self.FIELD_MAP.items():
+            if key in data:
+                setattr(inquiry, field, data[key])
+
+        can_assign_rm = user.is_admin or user.can("inquiries", "assignRm")
+
+        if can_assign_rm and "priority" in data:
+            inquiry.priority = data["priority"]
+
+        if can_assign_rm and "rmId" in data:
+            new_rm = data["rmId"]
+            if str(inquiry.rm_id) != str(new_rm):
+                inquiry.rm_id = new_rm
+                inquiry.assigned_on = timezone.now() if new_rm else None
+
+        inquiry.save()
+
+        inquiry = get_object_or_404(self._queryset(request), pk=pk)
         return Response(InquiryListSerializer(inquiry).data)
 
 

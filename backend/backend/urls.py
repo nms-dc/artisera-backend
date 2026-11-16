@@ -53,7 +53,7 @@ urlpatterns = (
             name="token_refresh",
         ),
         path("api/v1/crm/dashboard/", include("dashboard.urls")),
-        path("api/v1/inquiries/", include("inquiries.urls")),
+        path("api/v1/", include("inquiries.urls")),
         path("reports/", include("reports.urls")),
         path(
             "api/v1/crm/notifications/",
