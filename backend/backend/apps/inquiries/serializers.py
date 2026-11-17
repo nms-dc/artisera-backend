@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from accounts.models import User
+from accounts.models import User, RM_ROLE_ID
 from .models import Artist, Category, Customer, Inquiry, Subcategory, InquiryActivity
 from decimal import Decimal
 from django.db.models import Q, Sum
@@ -268,28 +268,17 @@ class InquiryActivitySerializer(serializers.ModelSerializer):
 
 
 class CustomerListSerializer(serializers.ModelSerializer):
-    altPhone = serializers.CharField(
-        source="alt_phone",
-        read_only=True,
-        allow_null=True,
-    )
-    address1 = serializers.CharField(read_only=True)
-    address2 = serializers.CharField(read_only=True)
+    altPhone = serializers.SerializerMethodField()
+    address2 = serializers.SerializerMethodField()
+    notes = serializers.SerializerMethodField()
 
-    customerType = serializers.CharField(
-        source="customer_type",
-        read_only=True,
-    )
+    customerType = serializers.CharField(source="customer_type", read_only=True)
     customerSince = serializers.DateTimeField(
-        source="customer_since",
-        read_only=True,
-        allow_null=True,
+        source="customer_since", read_only=True, allow_null=True
     )
-    createdAt = serializers.DateTimeField(
-        source="created_at",
-        read_only=True,
-    )
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
 
+    repeatProspect = serializers.SerializerMethodField()
     totalInquiries = serializers.SerializerMethodField()
     openInquiries = serializers.SerializerMethodField()
     wonInquiries = serializers.SerializerMethodField()
@@ -301,7 +290,6 @@ class CustomerListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Customer
-
         fields = [
             "id",
             "code",
@@ -310,12 +298,13 @@ class CustomerListSerializer(serializers.ModelSerializer):
             "email",
             "location",
             "state",
-            "altPhone",
             "address1",
             "address2",
             "pin",
             "country",
+            "altPhone",
             "customerType",
+            "repeatProspect",
             "customerSince",
             "status",
             "source",
@@ -330,60 +319,79 @@ class CustomerListSerializer(serializers.ModelSerializer):
             "lastActivityAt",
         ]
 
+    # --- nullable text fields: "" -> null, as in the FE sample ---
+    def get_altPhone(self, obj):
+        return obj.alt_phone or None
+
+    def get_address2(self, obj):
+        return obj.address2 or None
+
+    def get_notes(self, obj):
+        return obj.notes or None
+
     def get_rm(self, obj):
         if not obj.rm:
             return None
+        return {"id": str(obj.rm.id), "name": obj.rm.name}
 
-        return {
-            "id": obj.rm.id,
-            "name": obj.rm.name,
-        }
-
-    def get_originalInquiry(self, obj):
-        inquiry = obj.inquiries.order_by("created_at").first()
-
-        if not inquiry:
-            return None
-
-        return {
-            "id": inquiry.id,
-            "code": inquiry.code,
-        }
+    # --- counters: use annotations from the view, fall back to queries ---
+    def _annotated(self, obj, attr, fallback):
+        value = getattr(obj, attr, None)
+        return value if value is not None else fallback()
 
     def get_totalInquiries(self, obj):
-        return obj.inquiries.count()
+        return self._annotated(obj, "total_inquiries", lambda: obj.inquiries.count())
 
     def get_openInquiries(self, obj):
-        return obj.inquiries.exclude(
-            status__in=[
-                Inquiry.Status.WON,
-                Inquiry.Status.LOST,
-            ]
-        ).count()
+        return self._annotated(
+            obj,
+            "open_inquiries",
+            lambda: obj.inquiries.exclude(
+                status__in=[Inquiry.Status.WON, Inquiry.Status.LOST]
+            ).count(),
+        )
 
     def get_wonInquiries(self, obj):
-        return obj.inquiries.filter(status=Inquiry.Status.WON).count()
+        return self._annotated(
+            obj,
+            "won_inquiries",
+            lambda: obj.inquiries.filter(status=Inquiry.Status.WON).count(),
+        )
 
     def get_totalValue(self, obj):
-        total = obj.inquiries.aggregate(total=Sum("value"))["total"]
-
-        return total or 0
+        total = getattr(obj, "total_value", None)
+        if total is None:
+            total = obj.inquiries.aggregate(t=Sum("value"))["t"]
+        return float(total or 0)
 
     def get_lastActivityAt(self, obj):
-        last_inquiry = obj.inquiries.order_by("-updated_at").first()
+        value = getattr(obj, "last_activity_at", None)
+        if value is None:
+            last = obj.inquiries.order_by("-updated_at").first()
+            value = last.updated_at if last else None
+        return value
 
-        if not last_inquiry:
+    def get_repeatProspect(self, obj):
+        return self.get_totalInquiries(obj) > 1
+
+    def get_originalInquiry(self, obj):
+        first = getattr(obj, "first_inquiry", None)  # prefetched list, see view
+        if first is not None:
+            inquiry = first[0] if first else None
+        else:
+            inquiry = obj.inquiries.order_by("created_at").first()
+        if not inquiry:
             return None
-
-        return last_inquiry.updated_at
+        return {"id": str(inquiry.id), "code": inquiry.code}
 
 
 class CustomerCreateSerializer(serializers.ModelSerializer):
     customerType = serializers.CharField(
-        source="customer_type",
-        required=False,
-        default="Prospect",
+        source="customer_type", required=False, default="Prospect"
     )
+    rmId = serializers.UUIDField(required=False, allow_null=True)
+    state = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = Customer
@@ -395,44 +403,53 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             "state",
             "customerType",
             "notes",
+            "rmId",
         ]
 
-    def validate(self, attrs):
-        errors = {}
+    def validate_phone(self, value):
+        value = (value or "").strip()
+        if value and Customer.objects.filter(phone=value).exists():
+            raise serializers.ValidationError(
+                "A customer with this phone number already exists."
+            )
+        return value
 
-        phone = attrs.get("phone")
-        email = attrs.get("email")
+    def validate_email(self, value):
+        value = (value or "").strip().lower()
+        if value and Customer.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError(
+                "A customer with this email already exists."
+            )
+        return value
 
-        if phone and Customer.objects.filter(phone=phone).exists():
-            errors["phone"] = ["A customer with this phone number already exists."]
-
-        if email and Customer.objects.filter(email__iexact=email).exists():
-            errors["email"] = ["A customer with this email already exists."]
-
-        if errors:
-            raise serializers.ValidationError(errors)
-
-        return attrs
+    def validate_rmId(self, value):
+        if (
+            value
+            and not User.objects.filter(
+                id=value, is_active=True, role_id=RM_ROLE_ID
+            ).exists()
+        ):
+            raise serializers.ValidationError("Active RM does not exist.")
+        return value
 
     def create(self, validated_data):
+        rm_id = validated_data.pop("rmId", None)
+
         last_customer = (
             Customer.objects.filter(code__startswith="CUST-").order_by("-code").first()
         )
-
         next_number = 1
-
         if last_customer:
             try:
                 next_number = int(last_customer.code.split("-")[-1]) + 1
             except (ValueError, IndexError):
                 pass
 
-        code = f"CUST-{next_number:04d}"
-
         return Customer.objects.create(
-            code=code,
+            code=f"CUST-{next_number:04d}",
             status="Active",
             source="Direct",
+            rm_id=rm_id,
             **validated_data,
         )
 

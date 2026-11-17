@@ -24,22 +24,22 @@ urlpatterns = [
     # Customers
     # ==================================================
     path(
-        "customers/locations/",
+        "crm/customers/locations/",
         CustomerLocationsView.as_view(),
         name="customer-locations",
     ),
     path(
-        "customers/",
+        "crm/customers/",
         CustomerListView.as_view(),
         name="customer-list",
     ),
     path(
-        "customers/<uuid:pk>/activities/",
+        "crm/customers/<uuid:pk>/activities/",
         CustomerActivitiesView.as_view(),
         name="customer-activities",
     ),
     path(
-        "customers/<uuid:pk>/",
+        "crm/customers/<uuid:pk>/",
         CustomerDetailView.as_view(),
         name="customer-detail",
     ),

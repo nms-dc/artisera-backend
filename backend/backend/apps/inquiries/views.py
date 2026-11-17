@@ -1,6 +1,6 @@
 from datetime import timedelta
 from django.utils import timezone
-from django.db.models import Exists, OuterRef, Q, Count
+from django.db.models import Exists, OuterRef, Q, Count, Sum, Max, Prefetch
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -417,14 +417,43 @@ class InquiryActivityListView(APIView):
 class CustomerListView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _base_queryset():
+        return (
+            Customer.objects.select_related("rm")
+            .annotate(
+                total_inquiries=Count("inquiries"),
+                open_inquiries=Count(
+                    "inquiries",
+                    filter=~Q(
+                        inquiries__status__in=[Inquiry.Status.WON, Inquiry.Status.LOST]
+                    ),
+                ),
+                won_inquiries=Count(
+                    "inquiries", filter=Q(inquiries__status=Inquiry.Status.WON)
+                ),
+                total_value=Sum("inquiries__value"),
+                last_activity_at=Max("inquiries__updated_at"),
+            )
+            .prefetch_related(
+                Prefetch(
+                    "inquiries",
+                    queryset=Inquiry.objects.order_by("created_at").only(
+                        "id", "code", "customer_id", "created_at"
+                    ),
+                    to_attr="first_inquiry",
+                )
+            )
+        )
+
     def get(self, request):
         if not request.user.can("customers", "view"):
             raise PermissionDenied("You do not have permission to do this.")
 
-        queryset = Customer.objects.select_related("rm").all()
+        params = request.query_params
+        queryset = self._base_queryset()
 
-        # Search
-        search = request.query_params.get("q")
+        search = params.get("q")
         if search:
             queryset = queryset.filter(
                 Q(name__icontains=search)
@@ -433,45 +462,36 @@ class CustomerListView(APIView):
                 | Q(code__icontains=search)
             )
 
-        # Filters
-        customer_type = request.query_params.get("customerType")
-        if customer_type:
-            queryset = queryset.filter(customer_type=customer_type)
-
-        status_filter = request.query_params.get("status")
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-
-        location = request.query_params.get("location")
-        if location:
-            queryset = queryset.filter(location__iexact=location)
+        if params.get("customerType"):
+            queryset = queryset.filter(customer_type=params["customerType"])
+        if params.get("status"):
+            queryset = queryset.filter(status=params["status"])
+        if params.get("location"):
+            queryset = queryset.filter(location__iexact=params["location"])
+        if params.get("rmId"):
+            queryset = queryset.filter(rm_id=params["rmId"])
 
         queryset = queryset.order_by("name")
 
-        # Pagination
-        page = max(
-            int(request.query_params.get("page", 1)),
-            1,
-        )
-        page_size = max(
-            int(request.query_params.get("pageSize", 10)),
-            1,
-        )
+        def _int(name, default, maximum=None):
+            try:
+                value = max(int(params.get(name, default)), 1)
+            except (TypeError, ValueError):
+                return default
+            return min(value, maximum) if maximum else value
+
+        page = _int("page", 1)
+        page_size = _int("pageSize", 10, maximum=100)
 
         paginator = Paginator(queryset, page_size)
         page_obj = paginator.get_page(page)
-
-        serializer = CustomerListSerializer(
-            page_obj.object_list,
-            many=True,
-        )
 
         return Response(
             {
                 "count": paginator.count,
                 "page": page_obj.number,
                 "pageSize": page_size,
-                "results": serializer.data,
+                "results": CustomerListSerializer(page_obj.object_list, many=True).data,
             }
         )
 
@@ -481,14 +501,11 @@ class CustomerListView(APIView):
 
         serializer = CustomerCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         customer = serializer.save()
 
-        customer = Customer.objects.select_related("rm").get(pk=customer.pk)
-
+        customer = self._base_queryset().get(pk=customer.pk)
         return Response(
-            CustomerListSerializer(customer).data,
-            status=status.HTTP_201_CREATED,
+            CustomerListSerializer(customer).data, status=status.HTTP_201_CREATED
         )
 
 
