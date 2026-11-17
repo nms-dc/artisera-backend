@@ -13,12 +13,13 @@ from .serializers import (
     RoleOptionSerializer,
     RoleListSerializer,
     RoleCreateSerializer,
-    RoleUpdateSerializer
+    RoleUpdateSerializer,
 )
 from accounts.models import User, Role
 from django.core.paginator import Paginator
 from django.db.models import Q
 import requests
+
 
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
@@ -33,13 +34,17 @@ class UserOptionsView(ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return User.objects.filter(is_active=True).order_by("name")
+        queryset = User.objects.filter(is_active=True)
+
+        role = self.request.query_params.get("role")
+        if role:
+            queryset = queryset.filter(role_id=role)
+
+        return queryset.order_by("name")
 
     def post(self, request):
         if not request.user.can("users", "create"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         serializer = UserCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -67,18 +72,16 @@ class UserListView(APIView):
 
         if search:
             queryset = queryset.filter(
-                Q(name__icontains=search) |
-                Q(email__icontains=search) |
-                Q(phone__icontains=search)
+                Q(name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone__icontains=search)
             )
 
         if role:
             queryset = queryset.filter(role_id=role)
 
         if status_filter:
-            queryset = queryset.filter(
-                is_active=(status_filter.lower() == "active")
-            )
+            queryset = queryset.filter(is_active=(status_filter.lower() == "active"))
 
         queryset = queryset.order_by("name")
 
@@ -90,12 +93,25 @@ class UserListView(APIView):
 
         serializer = UserListSerializer(page_obj.object_list, many=True)
 
-        return Response({
-            "count": paginator.count,
-            "page": page_obj.number,
-            "pageSize": page_size,
-            "results": serializer.data,
-        })
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page_obj.number,
+                "pageSize": page_size,
+                "results": serializer.data,
+            }
+        )
+
+    def post(self, request):
+        if not request.user.can("users", "create"):
+            raise PermissionDenied("You do not have permission to do this.")
+
+        serializer = UserCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+
+        user = User.objects.select_related("role").get(pk=user.pk)
+        return Response(UserListSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
 class UserDetailView(APIView):
@@ -103,38 +119,24 @@ class UserDetailView(APIView):
 
     def get(self, request, pk):
         if not request.user.can("users", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         try:
-            user = (
-                User.objects
-                .select_related("role")
-                .get(pk=pk)
-            )
+            user = User.objects.select_related("role").get(pk=pk)
         except User.DoesNotExist:
             return Response(
                 {"detail": "User not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response(
-            UserListSerializer(user).data
-        )
+        return Response(UserListSerializer(user).data)
 
     def patch(self, request, pk):
         if not request.user.can("users", "edit"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         try:
-            user = (
-                User.objects
-                .select_related("role")
-                .get(pk=pk)
-            )
+            user = User.objects.select_related("role").get(pk=pk)
         except User.DoesNotExist:
             return Response(
                 {"detail": "User not found."},
@@ -147,11 +149,7 @@ class UserDetailView(APIView):
             and request.data.get("status") == "Inactive"
         ):
             return Response(
-                {
-                    "status": [
-                        "You cannot deactivate yourself."
-                    ]
-                },
+                {"status": ["You cannot deactivate yourself."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -165,9 +163,7 @@ class UserDetailView(APIView):
 
         user.refresh_from_db()
 
-        return Response(
-            UserListSerializer(user).data
-        )
+        return Response(UserListSerializer(user).data)
 
 
 class RoleOptionsView(ListAPIView):
@@ -175,9 +171,7 @@ class RoleOptionsView(ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Role.objects.filter(
-            status=Role.Status.ACTIVE
-        ).order_by("name")
+        return Role.objects.filter(status=Role.Status.ACTIVE).order_by("name")
 
 
 class RoleListView(APIView):
@@ -185,9 +179,7 @@ class RoleListView(APIView):
 
     def get(self, request):
         if not request.user.can("users", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         queryset = Role.objects.all()
 
@@ -196,8 +188,7 @@ class RoleListView(APIView):
 
         if search:
             queryset = queryset.filter(
-                Q(name__icontains=search) |
-                Q(description__icontains=search)
+                Q(name__icontains=search) | Q(description__icontains=search)
             )
 
         if status_filter:
@@ -206,10 +197,7 @@ class RoleListView(APIView):
         queryset = queryset.order_by("name")
 
         page = max(int(request.query_params.get("page", 1)), 1)
-        page_size = max(
-            int(request.query_params.get("pageSize", 10)),
-            1
-        )
+        page_size = max(int(request.query_params.get("pageSize", 10)), 1)
 
         paginator = Paginator(queryset, page_size)
         page_obj = paginator.get_page(page)
@@ -219,18 +207,18 @@ class RoleListView(APIView):
             many=True,
         )
 
-        return Response({
-            "count": paginator.count,
-            "page": page_obj.number,
-            "pageSize": page_size,
-            "results": serializer.data,
-        })
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page_obj.number,
+                "pageSize": page_size,
+                "results": serializer.data,
+            }
+        )
 
     def post(self, request):
         if not request.user.can("users", "create"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         serializer = RoleCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -248,9 +236,7 @@ class RoleDetailView(APIView):
 
     def get(self, request, pk):
         if not request.user.can("users", "view"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         try:
             role = Role.objects.get(pk=pk)
@@ -260,15 +246,11 @@ class RoleDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response(
-            RoleListSerializer(role).data
-        )
+        return Response(RoleListSerializer(role).data)
 
     def patch(self, request, pk):
         if not request.user.can("users", "edit"):
-            raise PermissionDenied(
-                "You do not have permission to do this."
-            )
+            raise PermissionDenied("You do not have permission to do this.")
 
         try:
             role = Role.objects.get(pk=pk)
@@ -287,46 +269,7 @@ class RoleDetailView(APIView):
 
         role = serializer.save()
 
-        return Response(
-            RoleListSerializer(role).data
-        )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        return Response(RoleListSerializer(role).data)
 
 
 """

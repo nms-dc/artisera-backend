@@ -5,6 +5,11 @@ from accounts.models import (
     normalize_permissions,
 )
 
+from accounts.models import ADMIN_ROLE_ID
+
+NEW_MODULES = ("sales", "orders", "shipments", "certificates")
+ACTIONS = ("view", "create", "edit", "delete", "assignRm")
+
 
 class UserOptionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -53,29 +58,23 @@ class UserListSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(max_length=255)  # no auto UniqueValidator
     roleId = serializers.CharField(write_only=True)
     status = serializers.ChoiceField(choices=["Active", "Inactive"], write_only=True)
 
     class Meta:
         model = User
-        fields = [
-            "id",
-            "name",
-            "email",
-            "phone",
-            "roleId",
-            "status",
-            "notes",
-        ]
+        fields = ["id", "name", "email", "phone", "roleId", "status", "notes"]
         read_only_fields = ["id"]
 
     def validate_email(self, value):
+        value = value.strip().lower()
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("A user with this email already exists.")
         return value
 
     def validate_roleId(self, value):
-        from .models import Role
+        from accounts.models import Role
 
         if not Role.objects.filter(id=value).exists():
             raise serializers.ValidationError("Role does not exist.")
@@ -95,29 +94,24 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(
+        max_length=255, required=False
+    )  # no auto UniqueValidator
     roleId = serializers.CharField(required=False)
-    status = serializers.ChoiceField(
-        choices=["Active", "Inactive"],
-        required=False,
-    )
+    status = serializers.ChoiceField(choices=["Active", "Inactive"], required=False)
 
     class Meta:
         model = User
-        fields = [
-            "name",
-            "email",
-            "phone",
-            "roleId",
-            "status",
-            "notes",
-        ]
+        fields = ["name", "email", "phone", "roleId", "status", "notes"]
 
     def validate_email(self, value):
-        queryset = User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk)
-
-        if queryset.exists():
+        value = value.strip().lower()
+        if (
+            User.objects.filter(email__iexact=value)
+            .exclude(pk=self.instance.pk)
+            .exists()
+        ):
             raise serializers.ValidationError("A user with this email already exists.")
-
         return value
 
     def validate_roleId(self, value):
@@ -125,22 +119,18 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
         if not Role.objects.filter(id=value).exists():
             raise serializers.ValidationError("Role does not exist.")
-
         return value
 
     def update(self, instance, validated_data):
         role_id = validated_data.pop("roleId", None)
         status_value = validated_data.pop("status", None)
 
-        # Update normal fields.
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
-        # Update role only if supplied.
         if role_id is not None:
             instance.role_id = role_id
 
-        # Update status only if supplied.
         if status_value is not None:
             instance.is_active = status_value == "Active"
 
@@ -149,14 +139,30 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
 
 class RoleOptionSerializer(serializers.ModelSerializer):
+    permissions = serializers.SerializerMethodField()
+    usersCount = serializers.SerializerMethodField()
+
     class Meta:
         model = Role
-        fields = ["id", "name"]
+        fields = ["id", "name", "permissions", "usersCount"]
+
+    def get_permissions(self, obj):
+        perms = {k: dict(v) for k, v in obj.effective_permissions.items()}
+        for module in NEW_MODULES:
+            if obj.pk == ADMIN_ROLE_ID:
+                perms[module] = {a: True for a in ACTIONS}
+            else:
+                existing = perms.get(module, {})
+                perms[module] = {a: bool(existing.get(a, False)) for a in ACTIONS}
+        return perms
+
+    def get_usersCount(self, obj):
+        return getattr(obj, "users_count", None) or obj.users.count()
 
 
 class RoleListSerializer(serializers.ModelSerializer):
-    usersCount = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
+    usersCount = serializers.SerializerMethodField()
 
     class Meta:
         model = Role
@@ -165,15 +171,22 @@ class RoleListSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "status",
-            "usersCount",
             "permissions",
+            "usersCount",
         ]
 
-    def get_usersCount(self, obj):
-        return obj.users.count()
-
     def get_permissions(self, obj):
-        return obj.effective_permissions
+        perms = obj.effective_permissions
+        is_admin = obj.pk == ADMIN_ROLE_ID
+        modules = set(perms) | set(NEW_MODULES)
+        return {
+            m: {a: is_admin or bool(perms.get(m, {}).get(a, False)) for a in ACTIONS}
+            for m in modules
+        }
+
+    def get_usersCount(self, obj):
+        count = getattr(obj, "users_count", None)
+        return count if count is not None else obj.users.count()
 
 
 class RoleCreateSerializer(serializers.ModelSerializer):
