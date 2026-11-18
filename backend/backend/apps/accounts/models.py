@@ -15,8 +15,12 @@ PERMISSION_SCHEMA = {
     "inquiries": CRUD_ACTIONS,
     "customers": CRUD_ACTIONS,
     "masters": CRUD_ACTIONS,
-    "reports": ("view",),
+    "reports": CRUD_ACTIONS,
     "users": CRUD_ACTIONS,
+    "sales": CRUD_ACTIONS,
+    "orders": CRUD_ACTIONS,
+    "shipments": CRUD_ACTIONS,
+    "certificates": CRUD_ACTIONS,
 }
 
 ADMIN_ROLE_ID = "ADMIN"

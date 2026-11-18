@@ -190,18 +190,16 @@ class RoleListSerializer(serializers.ModelSerializer):
 
 
 class RoleCreateSerializer(serializers.ModelSerializer):
-    status = serializers.ChoiceField(choices=["Active", "Inactive"])
+    status = serializers.ChoiceField(
+        choices=["Active", "Inactive"],
+        required=False,
+        default="Active",
+    )
     permissions = serializers.JSONField()
 
     class Meta:
         model = Role
-        fields = [
-            "id",
-            "name",
-            "description",
-            "status",
-            "permissions",
-        ]
+        fields = ["id", "name", "description", "status", "permissions"]
         read_only_fields = ["id"]
 
     def validate_name(self, value):

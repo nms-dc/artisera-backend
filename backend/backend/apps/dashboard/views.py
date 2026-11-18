@@ -28,60 +28,42 @@ class AdminDashboardView(APIView):
 
 
 class RMDashboardView(APIView):
+    """
+    GET /api/v1/crm/dashboard/rm/
+
+    - RM:    no parameters needed; always returns the logged-in RM's dashboard
+             (any rmId in the query string is ignored).
+    - Admin: rmId is optional. With rmId, returns that RM's dashboard;
+             without it, returns the Admin's own dashboard (no 400).
+    - range: optional number of days (default 30).
+    """
+
     permission_classes = [IsAdminOrRM]
 
     def get(self, request):
         try:
-            range_days = int(
-                request.query_params.get("range", 30)
-            )
-        except ValueError:
+            range_days = int(request.query_params.get("range", 30))
+        except (TypeError, ValueError):
             range_days = 30
 
-        rm_id = request.query_params.get("rmId")
+        rm = request.user
 
-        # ==============================================
-        # ADMIN
-        # Admin must explicitly select an RM
-        # ==============================================
+        # Only an Admin may look at another RM's dashboard.
         if request.user.is_admin:
+            rm_id = request.query_params.get("rmId")
 
-            if not rm_id:
-                return Response(
-                    {
-                        "rmId": [
-                            "This field is required for Admin."
-                        ]
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            if rm_id:
+                try:
+                    rm = User.objects.get(
+                        id=rm_id,
+                        is_active=True,
+                        role_id=RM_ROLE_ID,
+                    )
+                except (User.DoesNotExist, ValueError, ValidationError):
+                    return Response(
+                        {"rmId": ["RM not found."]},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-            try:
-                rm = User.objects.get(
-                    id=rm_id,
-                    is_active=True,
-                    role_id=RM_ROLE_ID,
-                )
-            except User.DoesNotExist:
-                return Response(
-                    {
-                        "rmId": [
-                            "RM not found."
-                        ]
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # ==============================================
-        # NORMAL RM
-        # rmId is ignored; user sees own dashboard
-        # ==============================================
-        else:
-            rm = request.user
-
-        data = get_rm_dashboard(
-            rm=rm,
-            range_days=range_days,
-        )
-
+        data = get_rm_dashboard(rm=rm, range_days=range_days)
         return Response(data)
