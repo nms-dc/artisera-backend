@@ -13,6 +13,8 @@ from .serializers import (
     InquiryListSerializer,
     InquiryCreateSerializer,
     InquiryActivitySerializer,
+    InquiryBulkSerializer,
+    InquiryStatusSerializer,
 )
 from inquiries.models import Customer, Category, Subcategory, Artist
 from inquiries.serializers import (
@@ -20,8 +22,14 @@ from inquiries.serializers import (
     CustomerCreateSerializer,
     CustomerUpdateSerializer,
     CustomerActivitySerializer,
+    CustomerSaleSerializer,
 )
 from rest_framework import status
+from django.db import transaction
+from accounts.models import User
+from .serializers import InquiryAssignSerializer  # add to your existing import list
+from .models import Inquiry, InquiryActivity, Sale, SaleProduct
+from .serializers import InquiryWonSerializer
 
 MAX_PAGE_SIZE = 100
 
@@ -237,6 +245,212 @@ class InquiryListView(APIView):
         )
 
         return Response(InquiryListSerializer(inquiry).data, status=201)
+
+
+class InquiryAssignView(APIView):
+    """
+    POST /api/v1/crm/inquiries/{id}/assign/
+    Payload: {"rmId": "<uuid>", "priority": "High"}   (priority optional)
+    Returns the full inquiry, same shape as GET /inquiries/{id}/.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+
+        if not (user.is_admin or user.can("inquiries", "assignRm")):
+            raise PermissionDenied("You do not have permission to do this.")
+
+        serializer = InquiryAssignSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            inquiry = get_object_or_404(Inquiry.objects.select_for_update(), pk=pk)
+            rm = User.objects.get(pk=data["rmId"])
+
+            metadata = {}
+
+            if str(inquiry.rm_id) != str(rm.id):
+                metadata["previousRmId"] = str(inquiry.rm_id) if inquiry.rm_id else None
+                metadata["rmId"] = str(rm.id)
+                metadata["rmName"] = rm.name
+                inquiry.rm = rm
+                inquiry.assigned_on = timezone.now()
+
+            new_priority = data.get("priority")
+            if new_priority and new_priority != inquiry.priority:
+                metadata["previousPriority"] = inquiry.priority
+                metadata["priority"] = new_priority
+                inquiry.priority = new_priority
+
+            if metadata:
+                inquiry.save()
+
+                parts = []
+                if "rmId" in metadata:
+                    parts.append(f"Assigned to {rm.name}")
+                if "priority" in metadata:
+                    parts.append(f"Priority set to {metadata['priority']}")
+
+                InquiryActivity.objects.create(
+                    inquiry=inquiry,
+                    action="assigned",
+                    description=" · ".join(parts),
+                    metadata=metadata,
+                    created_by=user,
+                )
+
+        # Re-fetch with the repeat_prospect annotation, as the other views do.
+        inquiry = (
+            Inquiry.objects.select_related(
+                "customer", "category", "subcategory", "artist", "rm"
+            )
+            .annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+            .get(pk=pk)
+        )
+        return Response(InquiryListSerializer(inquiry).data)
+
+
+class InquiryBulkView(APIView):
+    """
+    POST /api/v1/crm/inquiries/bulk/
+    Payload:  {"ids": [...], "action": "reassign", "rmId": "<uuid>"}
+    Response: {"updated": <number of inquiries actually changed>}
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+
+        if not (user.is_admin or user.can("inquiries", "assignRm")):
+            raise PermissionDenied("You do not have permission to do this.")
+
+        serializer = InquiryBulkSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        ids = data["ids"]
+        rm = User.objects.get(pk=data["rmId"])
+        updated = 0
+
+        with transaction.atomic():
+            inquiries = list(Inquiry.objects.select_for_update().filter(pk__in=ids))
+
+            # All-or-nothing: every id must exist.
+            missing = set(ids) - {i.pk for i in inquiries}
+            if missing:
+                return Response(
+                    {
+                        "ids": [
+                            "Inquiries not found: "
+                            + ", ".join(str(m) for m in sorted(missing, key=str))
+                        ]
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            now = timezone.now()
+            for inquiry in inquiries:
+                if str(inquiry.rm_id) == str(rm.id):
+                    continue  # already assigned to this RM, nothing to change
+
+                previous_rm_id = str(inquiry.rm_id) if inquiry.rm_id else None
+                inquiry.rm = rm
+                inquiry.assigned_on = now
+                inquiry.save()
+
+                InquiryActivity.objects.create(
+                    inquiry=inquiry,
+                    action="assigned",
+                    description=f"Assigned to {rm.name}",
+                    metadata={
+                        "previousRmId": previous_rm_id,
+                        "rmId": str(rm.id),
+                        "rmName": rm.name,
+                        "bulk": True,
+                    },
+                    created_by=user,
+                )
+                updated += 1
+
+        return Response({"updated": updated})
+
+
+class InquiryStatusView(APIView):
+    """
+    POST /api/v1/crm/inquiries/{id}/status/
+    Payload:  {"status": "Lost", "remark": "Budget not approved"}
+    Response: the full inquiry (same shape as GET /inquiries/{id}/)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+
+        serializer = InquiryStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_status = serializer.validated_data["status"]
+        remark = serializer.validated_data["remark"]
+
+        with transaction.atomic():
+            inquiry = get_object_or_404(Inquiry.objects.select_for_update(), pk=pk)
+
+            # Admin, or the RM this inquiry is assigned to.
+            if not user.is_admin and inquiry.rm_id != user.id:
+                raise PermissionDenied("You do not have permission to do this.")
+
+            if inquiry.status != new_status:
+                previous_status = inquiry.status
+                inquiry.status = new_status
+
+                if new_status in (Inquiry.Status.WON, Inquiry.Status.LOST):
+                    inquiry.closed_at = timezone.now()
+                    inquiry.next_follow_up = None
+                else:
+                    inquiry.closed_at = None
+
+                inquiry.save()
+
+                description = f"Status changed from {previous_status} to {new_status}"
+                if remark:
+                    description += f": {remark}"
+
+                InquiryActivity.objects.create(
+                    inquiry=inquiry,
+                    action="status_changed",
+                    description=description[:500],
+                    metadata={
+                        "previousStatus": previous_status,
+                        "status": new_status,
+                        "remark": remark,
+                    },
+                    created_by=user,
+                )
+
+        inquiry = (
+            Inquiry.objects.select_related(
+                "customer", "category", "subcategory", "artist", "rm"
+            )
+            .annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+            .get(pk=pk)
+        )
+        return Response(InquiryListSerializer(inquiry).data)
 
 
 class InquiryDetailView(APIView):
@@ -1206,3 +1420,134 @@ class MasterDetailView(APIView):
             {"detail": "Unknown master."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+
+class InquiryWonView(APIView):
+    """
+    POST /api/v1/crm/inquiries/{id}/won/
+    Marks the inquiry as Won and creates its sale.
+    Returns the full inquiry with `sale` filled in.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+
+        serializer = InquiryWonSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            inquiry = get_object_or_404(Inquiry.objects.select_for_update(), pk=pk)
+
+            # Admin, or the RM this inquiry is assigned to.
+            if not user.is_admin and inquiry.rm_id != user.id:
+                raise PermissionDenied("You do not have permission to do this.")
+
+            if Sale.objects.filter(inquiry=inquiry).exists():
+                return Response(
+                    {"detail": "A sale already exists for this inquiry."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            last_sale = (
+                Sale.objects.filter(code__startswith="SAL-").order_by("-code").first()
+            )
+            next_number = 1
+            if last_sale:
+                try:
+                    next_number = int(last_sale.code.split("-")[-1]) + 1
+                except (ValueError, IndexError):
+                    pass
+
+            sale = Sale.objects.create(
+                code=f"SAL-{next_number:05d}",
+                inquiry=inquiry,
+                total_value=data["totalValue"],
+                sale_date=data["saleDate"],
+                certificate_plan=data.get("certificatePlan", ""),
+                shipment_priority=data.get("shipmentPriority", "Normal"),
+                required_shipment_date=data.get("requiredShipmentDate"),
+                shipment_instructions=data.get("shipmentInstructions", ""),
+                payment_status=data.get("paymentStatus", "Pending"),
+                payment_notes=data.get("paymentNotes", ""),
+                notes=data.get("notes", ""),
+                created_by=user,
+            )
+
+            SaleProduct.objects.bulk_create(
+                [
+                    SaleProduct(
+                        sale=sale,
+                        name=p["name"],
+                        artist_id=p.get("artistId"),
+                        url=p.get("url"),
+                        listed_price=p["listedPrice"],
+                        quantity=p.get("quantity", 1),
+                        product_status=p.get("productStatus", ""),
+                        commission_ready_date=p.get("commissionReadyDate"),
+                        order_notes=p.get("orderNotes", ""),
+                    )
+                    for p in data["products"]
+                ]
+            )
+
+            previous_status = inquiry.status
+            inquiry.status = Inquiry.Status.WON
+            inquiry.closed_at = timezone.now()
+            inquiry.next_follow_up = None
+            inquiry.save()
+
+            InquiryActivity.objects.create(
+                inquiry=inquiry,
+                action="won",
+                description=f"Marked as Won, sale {sale.code} created",
+                metadata={
+                    "previousStatus": previous_status,
+                    "saleId": str(sale.id),
+                    "saleCode": sale.code,
+                    "totalValue": str(sale.total_value),
+                },
+                created_by=user,
+            )
+
+        inquiry = (
+            Inquiry.objects.select_related(
+                "customer", "category", "subcategory", "artist", "rm"
+            )
+            .annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+            .get(pk=pk)
+        )
+        return Response(
+            InquiryListSerializer(inquiry).data, status=status.HTTP_201_CREATED
+        )
+
+
+class CustomerSalesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        if not request.user.can("customers", "view"):
+            raise PermissionDenied("You do not have permission to do this.")
+
+        if not Customer.objects.filter(pk=pk).exists():
+            return Response(
+                {"detail": "Customer not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        sales = (
+            Sale.objects.filter(inquiry__customer_id=pk)
+            .select_related("inquiry")
+            .prefetch_related("products")
+            .order_by("-sale_date", "-created_at")
+        )
+
+        return Response(CustomerSaleSerializer(sales, many=True).data)

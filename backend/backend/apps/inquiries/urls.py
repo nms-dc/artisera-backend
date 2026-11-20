@@ -12,6 +12,11 @@ from .views import (
     MasterOptionsView,
     MasterListView,
     MasterDetailView,
+    InquiryAssignView,
+    InquiryBulkView,
+    InquiryStatusView,
+    InquiryWonView,
+    CustomerSalesView,
 )
 
 urlpatterns = [
@@ -78,5 +83,30 @@ urlpatterns = [
         "masters/<str:kind>/<uuid:pk>/",
         MasterDetailView.as_view(),
         name="master-detail",
+    ),
+    path(
+        "crm/inquiries/<uuid:pk>/assign/",
+        InquiryAssignView.as_view(),
+        name="inquiry-assign",
+    ),
+    path(
+        "crm/inquiries/bulk/",
+        InquiryBulkView.as_view(),
+        name="inquiry-bulk",
+    ),
+    path(
+        "crm/inquiries/<uuid:pk>/status/",
+        InquiryStatusView.as_view(),
+        name="inquiry-status",
+    ),
+    path(
+        "crm/inquiries/<uuid:pk>/won/",
+        InquiryWonView.as_view(),
+        name="inquiry-won",
+    ),
+    path(
+        "crm/customers/<uuid:pk>/sales/",
+        CustomerSalesView.as_view(),
+        name="customer-sales",
     ),
 ]

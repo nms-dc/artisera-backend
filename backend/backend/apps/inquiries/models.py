@@ -303,3 +303,61 @@ class InquiryActivity(models.Model):
 
     def __str__(self):
         return f"{self.inquiry.code} - {self.action}"
+
+
+class Sale(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code = models.CharField(max_length=30, unique=True, null=True, blank=True)
+    inquiry = models.OneToOneField(
+        Inquiry, on_delete=models.PROTECT, related_name="sale"
+    )
+    total_value = models.DecimalField(max_digits=14, decimal_places=2)
+    sale_date = models.DateTimeField()
+    certificate_plan = models.CharField(max_length=50, blank=True, default="")
+    shipment_priority = models.CharField(max_length=30, blank=True, default="Normal")
+    required_shipment_date = models.DateTimeField(null=True, blank=True)
+    shipment_instructions = models.TextField(blank=True, default="")
+    payment_status = models.CharField(max_length=30, blank=True, default="Pending")
+    payment_notes = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sales_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.code} - {self.inquiry.code}"
+
+
+class SaleProduct(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="products")
+    name = models.CharField(max_length=255)
+    artist = models.ForeignKey(
+        Artist,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sale_products",
+    )
+    url = models.CharField(max_length=500, null=True, blank=True)
+    listed_price = models.DecimalField(max_digits=14, decimal_places=2)
+    quantity = models.PositiveIntegerField(default=1)
+    product_status = models.CharField(max_length=50, blank=True, default="")
+    commission_ready_date = models.DateTimeField(null=True, blank=True)
+    order_notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return self.name

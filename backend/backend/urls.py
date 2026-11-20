@@ -59,6 +59,7 @@ urlpatterns = (
             "api/v1/crm/notifications/",
             include("notifications.urls"),
         ),
+        path("api/v1/gallery/", include("gallery.urls")),
     ]
     + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
     + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

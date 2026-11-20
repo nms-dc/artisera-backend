@@ -6,20 +6,31 @@ from accounts.api.views import (
     UserDetailView,
     RoleOptionsView,
     RoleListView,
-    RoleDetailView
+    RoleDetailView,
+    LogoutView,
 )
-urlpatterns = [path("auth/me/", CurrentUserView.as_view(), name="current-user"),
-               path("users/options/", UserOptionsView.as_view(), name="user-options"),
-               path("users/", UserListView.as_view(), name="user-list"),
-               path("users/<uuid:pk>/",UserDetailView.as_view(),name="user-detail",),
-               path("roles/options/", RoleOptionsView.as_view(), name="role-options"),
-               path("roles/", RoleListView.as_view(), name="role-list"),  
-               path("roles/<str:pk>/",RoleDetailView.as_view(),name="role-detail",),             
-               ]
+
+urlpatterns = [
+    path("auth/me/", CurrentUserView.as_view(), name="current-user"),
+    path("users/options/", UserOptionsView.as_view(), name="user-options"),
+    path("users/", UserListView.as_view(), name="user-list"),
+    path(
+        "users/<uuid:pk>/",
+        UserDetailView.as_view(),
+        name="user-detail",
+    ),
+    path("roles/options/", RoleOptionsView.as_view(), name="role-options"),
+    path("roles/", RoleListView.as_view(), name="role-list"),
+    path(
+        "roles/<str:pk>/",
+        RoleDetailView.as_view(),
+        name="role-detail",
+    ),
+    path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
+]
 
 
-
-#chabsons old urls
+# chabsons old urls
 # from django.urls import URLPattern, path, include
 # from accounts.api.views import customer_inserter, send_otp, user_registration_view, user_login_view, user_profile_view, logout_View\
 #      , user_terms_accept, Forgot_pin, validate_email, change_password, DailyVisitsView

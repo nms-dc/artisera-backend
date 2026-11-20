@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     "reports",
     "notifications",
     "import_export",
+    "gallery",
     # keep: holds common.storage
     # 'product',                       # DISABLED: old project app (uses old User fields)
     # 'company',                       # DISABLED: old project app

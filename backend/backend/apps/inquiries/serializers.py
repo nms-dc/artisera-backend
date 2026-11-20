@@ -1,9 +1,18 @@
 from rest_framework import serializers
 
 from accounts.models import User, RM_ROLE_ID
-from .models import Artist, Category, Customer, Inquiry, Subcategory, InquiryActivity
+from .models import (
+    Artist,
+    Category,
+    Customer,
+    Inquiry,
+    Subcategory,
+    InquiryActivity,
+    Sale,
+)
 from decimal import Decimal
 from django.db.models import Q, Sum
+from django.core.exceptions import ObjectDoesNotExist
 
 
 class InquiryListSerializer(serializers.ModelSerializer):
@@ -129,7 +138,44 @@ class InquiryListSerializer(serializers.ModelSerializer):
         )
 
     def get_sale(self, obj):
-        return None  # until a Sale model exists
+        try:
+            sale = obj.sale
+        except ObjectDoesNotExist:
+            return None
+
+        dt = serializers.DateTimeField()
+
+        def _dt(value):
+            return dt.to_representation(value) if value else None
+
+        return {
+            "id": str(sale.id),
+            "code": sale.code,
+            "totalValue": float(sale.total_value),
+            "saleDate": _dt(sale.sale_date),
+            "certificatePlan": sale.certificate_plan,
+            "products": [
+                {
+                    "id": str(p.id),
+                    "name": p.name,
+                    "artistId": str(p.artist_id) if p.artist_id else None,
+                    "url": p.url,
+                    "listedPrice": float(p.listed_price),
+                    "quantity": p.quantity,
+                    "productStatus": p.product_status,
+                    "commissionReadyDate": _dt(p.commission_ready_date),
+                    "orderNotes": p.order_notes,
+                }
+                for p in sale.products.all()
+            ],
+            "shipmentPriority": sale.shipment_priority,
+            "requiredShipmentDate": _dt(sale.required_shipment_date),
+            "shipmentInstructions": sale.shipment_instructions,
+            "paymentStatus": sale.payment_status,
+            "paymentNotes": sale.payment_notes,
+            "notes": sale.notes,
+            "createdAt": _dt(sale.created_at),
+        }
 
 
 class InquiryCreateSerializer(serializers.Serializer):
@@ -228,6 +274,56 @@ class InquiryCreateSerializer(serializers.Serializer):
                         ]
                     }
                 )
+        return attrs
+
+
+class InquiryAssignSerializer(serializers.Serializer):
+    rmId = serializers.UUIDField()
+    priority = serializers.ChoiceField(
+        choices=Inquiry.Priority.choices,
+        required=False,
+    )
+
+    def validate_rmId(self, value):
+        if not User.objects.filter(
+            id=value, is_active=True, role_id=RM_ROLE_ID
+        ).exists():
+            raise serializers.ValidationError("Active RM does not exist.")
+        return value
+
+
+class InquiryBulkSerializer(serializers.Serializer):
+    ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=False,
+        max_length=100,
+    )
+    action = serializers.ChoiceField(choices=["reassign"])
+    rmId = serializers.UUIDField()
+
+    def validate_ids(self, value):
+        # Drop duplicates, keep order
+        return list(dict.fromkeys(value))
+
+    def validate_rmId(self, value):
+        if not User.objects.filter(
+            id=value, is_active=True, role_id=RM_ROLE_ID
+        ).exists():
+            raise serializers.ValidationError("Active RM does not exist.")
+        return value
+
+
+class InquiryStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=Inquiry.Status.choices)
+    remark = serializers.CharField(max_length=500, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        remark = (attrs.get("remark") or "").strip()
+        if attrs["status"] == Inquiry.Status.LOST and not remark:
+            raise serializers.ValidationError(
+                {"remark": ["A remark is required when closing as Lost."]}
+            )
+        attrs["remark"] = remark
         return attrs
 
 
@@ -588,3 +684,105 @@ class MasterOptionSerializer(serializers.ModelSerializer):
         if hasattr(obj, "category_id"):
             return obj.category_id
         return None
+
+
+class SaleProductInputSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255)
+    artistId = serializers.UUIDField(required=False, allow_null=True)
+    url = serializers.CharField(
+        max_length=500, required=False, allow_null=True, allow_blank=True
+    )
+    listedPrice = serializers.DecimalField(
+        max_digits=14, decimal_places=2, min_value=Decimal("0")
+    )
+    quantity = serializers.IntegerField(min_value=1, default=1)
+    productStatus = serializers.CharField(
+        max_length=50, required=False, allow_blank=True
+    )
+    commissionReadyDate = serializers.DateTimeField(required=False, allow_null=True)
+    orderNotes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_artistId(self, value):
+        if value and not Artist.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Artist does not exist.")
+        return value
+
+
+class InquiryWonSerializer(serializers.Serializer):
+    totalValue = serializers.DecimalField(
+        max_digits=14, decimal_places=2, min_value=Decimal("0.01")
+    )
+    saleDate = serializers.DateTimeField()
+    certificatePlan = serializers.CharField(
+        max_length=50, required=False, allow_blank=True
+    )
+    products = SaleProductInputSerializer(many=True, allow_empty=False)
+    shipmentPriority = serializers.CharField(
+        max_length=30, required=False, allow_blank=True, default="Normal"
+    )
+    requiredShipmentDate = serializers.DateTimeField(required=False, allow_null=True)
+    shipmentInstructions = serializers.CharField(required=False, allow_blank=True)
+    paymentStatus = serializers.CharField(
+        max_length=30, required=False, allow_blank=True, default="Pending"
+    )
+    paymentNotes = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class CustomerSaleSerializer(serializers.ModelSerializer):
+    saleNumber = serializers.CharField(source="code", read_only=True)
+    saleDate = serializers.DateTimeField(source="sale_date", read_only=True)
+    totalValue = serializers.DecimalField(
+        source="total_value",
+        max_digits=14,
+        decimal_places=2,
+        coerce_to_string=False,
+        read_only=True,
+    )
+    paymentStatus = serializers.CharField(source="payment_status", read_only=True)
+    totalOrders = serializers.SerializerMethodField()
+    totalProducts = serializers.SerializerMethodField()
+    productsRemaining = serializers.SerializerMethodField()
+    orders = serializers.SerializerMethodField()
+    emailStatus = serializers.SerializerMethodField()
+    emailSentAt = serializers.SerializerMethodField()
+    inquiry = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Sale
+        fields = [
+            "id",
+            "saleNumber",
+            "saleDate",
+            "totalValue",
+            "paymentStatus",
+            "totalOrders",
+            "totalProducts",
+            "productsRemaining",
+            "orders",
+            "emailStatus",
+            "emailSentAt",
+            "inquiry",
+        ]
+
+    def get_totalProducts(self, obj):
+        return sum(p.quantity for p in obj.products.all())
+
+    # Placeholders until Order / email models exist
+    def get_orders(self, obj):
+        return []
+
+    def get_totalOrders(self, obj):
+        return len(self.get_orders(obj))
+
+    def get_productsRemaining(self, obj):
+        return self.get_totalProducts(obj)
+
+    def get_emailStatus(self, obj):
+        return "Pending"
+
+    def get_emailSentAt(self, obj):
+        return None
+
+    def get_inquiry(self, obj):
+        return {"id": str(obj.inquiry_id), "code": obj.inquiry.code}

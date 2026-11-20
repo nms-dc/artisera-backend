@@ -21,6 +21,28 @@ from django.db.models import Q
 import requests
 
 
+from django.contrib.auth import logout as django_logout
+
+
+class LogoutView(APIView):
+    """
+    POST /api/v1/account/auth/logout/
+    Payload: {} (none)    Response: {}
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # --- A) DRF TokenAuthentication: delete the token server-side ---
+        if request.auth is not None and hasattr(request.auth, "delete"):
+            request.auth.delete()
+
+        # --- B) SessionAuthentication: clear the session ---
+        django_logout(request)
+
+        return Response({}, status=status.HTTP_200_OK)
+
+
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
 
