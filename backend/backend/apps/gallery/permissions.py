@@ -29,3 +29,10 @@ def scope_customers(queryset, user):
         filters["inquiries__rm"] = user
     # Both conditions go in one filter() call so they apply to the same inquiry.
     return queryset.filter(**filters).distinct()
+
+
+def can_access_order(user, order):
+    """Admins and non-RM roles see every order; an RM only their own sales' orders."""
+    if not _is_rm(user):
+        return True
+    return order.sale.inquiry.rm_id == user.id

@@ -143,6 +143,8 @@ STATIC_URL = "/static/"
 STATICFILES_LOCATION = "static"
 MEDIA_URL = "/uploads/"
 
+MEDIA_ROOT = BASE_DIR / "uploads"
+
 # CHANGED: STATICFILES_STORAGE / DEFAULT_FILE_STORAGE were removed in Django 5.1.
 STORAGES = {
     "default": {"BACKEND": "common.storage.S3MediaStorage"},

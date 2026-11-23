@@ -6,6 +6,25 @@ from .views import (
     GallerySaleListView,
     GallerySaleExportView,
     GallerySaleProductView,
+    GallerySaleEmailOverrideView,
+    GallerySaleEmailReceivedView,
+    GallerySaleEmailSentView,
+    GallerySaleOrderCreateView,
+    GalleryOrderListView,
+    GalleryOrderExportView,
+    GalleryOrderDetailView,
+    GalleryOrderActivitiesView,
+    GalleryOrderMediaUploadView,
+    GalleryOrderMediaDeleteView,
+    GalleryOrderDispatchView,
+    GalleryOrderReceivedView,
+    GalleryOrderCertificateSentView,
+    GalleryShipmentListView,
+    GalleryShipmentExportView,
+    GalleryShipmentStatusView,
+    GalleryShipmentStatusView,
+    GalleryCertificateListView,
+    GalleryCertificateExportView,
 )
 
 urlpatterns = [
@@ -21,5 +40,90 @@ urlpatterns = [
         "sales/<uuid:pk>/products/<uuid:product_id>/",
         GallerySaleProductView.as_view(),
         name="gallery-sale-product",
+    ),
+    path(
+        "sales/<uuid:pk>/email-override/",
+        GallerySaleEmailOverrideView.as_view(),
+        name="gallery-sale-email-override",
+    ),
+    path(
+        "sales/<uuid:pk>/email-received/",
+        GallerySaleEmailReceivedView.as_view(),
+        name="gallery-sale-email-received",
+    ),
+    path(
+        "sales/<uuid:pk>/email-sent/",
+        GallerySaleEmailSentView.as_view(),
+        name="gallery-sale-email-sent",
+    ),
+    path(
+        "sales/<uuid:pk>/orders/",
+        GallerySaleOrderCreateView.as_view(),
+        name="gallery-sale-orders",
+    ),
+    path("orders/", GalleryOrderListView.as_view(), name="gallery-orders"),
+    path(
+        "orders/export/", GalleryOrderExportView.as_view(), name="gallery-orders-export"
+    ),
+    path(
+        "orders/<uuid:pk>/",
+        GalleryOrderDetailView.as_view(),
+        name="gallery-order-detail",
+    ),
+    path(
+        "orders/<uuid:pk>/activities/",
+        GalleryOrderActivitiesView.as_view(),
+        name="gallery-order-activities",
+    ),
+    path(
+        "orders/<uuid:pk>/media/",
+        GalleryOrderMediaUploadView.as_view(),
+        name="gallery-order-media",
+    ),
+    path(
+        "orders/<uuid:pk>/media/<uuid:media_id>/",
+        GalleryOrderMediaDeleteView.as_view(),
+        name="gallery-order-media-delete",
+    ),
+    path(
+        "orders/<uuid:pk>/dispatch/",
+        GalleryOrderDispatchView.as_view(),
+        name="gallery-order-dispatch",
+    ),
+    path(
+        "orders/<uuid:pk>/received/",
+        GalleryOrderReceivedView.as_view(),
+        name="gallery-order-received",
+    ),
+    path(
+        "orders/<uuid:pk>/certificate-sent/",
+        GalleryOrderCertificateSentView.as_view(),
+        name="gallery-order-certificate-sent",
+    ),
+    path("shipments/", GalleryShipmentListView.as_view(), name="gallery-shipments"),
+    path(
+        "shipments/export/",
+        GalleryShipmentExportView.as_view(),
+        name="gallery-shipments-export",
+    ),
+    path(
+        "shipments/<uuid:pk>/status/",
+        GalleryShipmentStatusView.as_view(),
+        name="gallery-shipment-status",
+    ),
+    path(
+        "shipments/<uuid:pk>/status/",
+        GalleryShipmentStatusView.as_view(),
+        name="gallery-shipment-status",
+    ),
+    path(
+        "certificates/",
+        GalleryCertificateListView.as_view(),
+        name="gallery-certificates",
+    ),
+    path(
+        "certificates/export/",
+        GalleryCertificateExportView.as_view(),
+        name="gallery-certificates-export",
     ),
 ]

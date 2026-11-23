@@ -2,6 +2,12 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.conf import settings
+from django.core.files.storage import FileSystemStorage
+
+
+def gallery_storage():
+    return FileSystemStorage(location=settings.MEDIA_ROOT, base_url=settings.MEDIA_URL)
 
 
 class SaleEmailStatus(models.Model):
@@ -135,7 +141,7 @@ class OrderMedia(models.Model):
     )
     kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.PRODUCT)
     type = models.CharField(max_length=10)  # "image" | "video"
-    file = models.FileField(upload_to="gallery/orders/%Y/%m/")
+    file = models.FileField(upload_to="gallery/orders/%Y/%m/", storage=gallery_storage)
     file_name = models.CharField(max_length=255)
     size = models.PositiveIntegerField(default=0)
     uploaded_by = models.ForeignKey(
