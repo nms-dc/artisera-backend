@@ -1,5 +1,5 @@
 from rest_framework import serializers
-
+from django.utils import timezone
 from accounts.models import User, RM_ROLE_ID
 from .models import (
     Artist,
@@ -786,3 +786,28 @@ class CustomerSaleSerializer(serializers.ModelSerializer):
 
     def get_inquiry(self, obj):
         return {"id": str(obj.inquiry_id), "code": obj.inquiry.code}
+
+
+class InquiryAssignSerializer(serializers.Serializer):
+    rmId = serializers.UUIDField()
+    priority = serializers.ChoiceField(choices=Inquiry.Priority.choices)
+
+    def validate_rmId(self, value):
+        if not User.objects.filter(
+            id=value, is_active=True, role_id=RM_ROLE_ID
+        ).exists():
+            raise serializers.ValidationError("Active RM does not exist.")
+        return value
+
+
+class InquiryTouchbaseSerializer(serializers.Serializer):
+    method = serializers.CharField(max_length=50)
+    at = serializers.DateTimeField()
+    notes = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+
+    def validate_at(self, value):
+        if value > timezone.now():
+            raise serializers.ValidationError(
+                "The date and time cannot be in the future."
+            )
+        return value

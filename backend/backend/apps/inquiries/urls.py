@@ -17,6 +17,7 @@ from .views import (
     InquiryStatusView,
     InquiryWonView,
     CustomerSalesView,
+    InquiryTouchbaseView,
 )
 
 urlpatterns = [
@@ -108,5 +109,10 @@ urlpatterns = [
         "crm/customers/<uuid:pk>/sales/",
         CustomerSalesView.as_view(),
         name="customer-sales",
+    ),
+    path(
+        "crm/inquiries/<uuid:pk>/touchbase/",
+        InquiryTouchbaseView.as_view(),
+        name="inquiry-touchbase",
     ),
 ]

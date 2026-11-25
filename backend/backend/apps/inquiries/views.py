@@ -1,5 +1,6 @@
 from datetime import timedelta
 from django.utils import timezone
+from datetime import timedelta, timezone as dt_timezone
 from django.db.models import Exists, OuterRef, Q, Count, Sum, Max, Prefetch
 from django.utils import timezone
 from rest_framework.response import Response
@@ -15,6 +16,7 @@ from .serializers import (
     InquiryActivitySerializer,
     InquiryBulkSerializer,
     InquiryStatusSerializer,
+    InquiryTouchbaseSerializer,
 )
 from inquiries.models import Customer, Category, Subcategory, Artist
 from inquiries.serializers import (
@@ -1551,3 +1553,90 @@ class CustomerSalesView(APIView):
         )
 
         return Response(CustomerSaleSerializer(sales, many=True).data)
+
+
+def _iso_utc(value):
+    return value.astimezone(dt_timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class InquiryTouchbaseView(APIView):
+    """
+    POST /api/v1/crm/inquiries/{id}/touchbase/
+    Body: {"method": "Call", "at": "<ISO-8601 UTC>", "notes": "..."}
+    Records the FIRST outreach. Permission: the inquiry's own RM.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+
+        serializer = InquiryTouchbaseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        method = data["method"]
+        at = data["at"].astimezone(dt_timezone.utc)
+        notes = (data.get("notes") or "").strip()
+
+        with transaction.atomic():
+            inquiry = get_object_or_404(Inquiry.objects.select_for_update(), pk=pk)
+
+            if not user.is_admin and inquiry.rm_id != user.id:
+                raise PermissionDenied("You do not have permission to do this.")
+
+            if InquiryActivity.objects.filter(
+                inquiry=inquiry, action="touchbase"
+            ).exists():
+                return Response(
+                    {
+                        "detail": "A touchbase has already been recorded for this inquiry."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if inquiry.status != Inquiry.Status.TOUCHBASE:
+                return Response(
+                    {
+                        "detail": "A touchbase can only be recorded for an inquiry in Touchbase status."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            next_follow_up = at + timedelta(days=2)
+
+            inquiry.status = Inquiry.Status.TOUCHBASE_FOLLOWUP
+            inquiry.last_contact = at
+            inquiry.next_follow_up = next_follow_up
+            inquiry.save()
+
+            description = f"Touchbase recorded via {method}"
+            if notes:
+                description += f": {notes}"
+
+            InquiryActivity.objects.create(
+                inquiry=inquiry,
+                action="touchbase",
+                description=description[:500],
+                metadata={
+                    "method": method,
+                    "at": _iso_utc(at),
+                    "nextFollowUp": _iso_utc(next_follow_up),
+                    "notes": notes,
+                },
+                created_by=user,
+            )
+
+        inquiry = (
+            Inquiry.objects.select_related(
+                "customer", "category", "subcategory", "artist", "rm"
+            )
+            .annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+            .get(pk=pk)
+        )
+        return Response(InquiryListSerializer(inquiry).data)
