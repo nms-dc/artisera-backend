@@ -248,5 +248,9 @@ def get_rm_dashboard(rm, range_days=30):
                 "count": lost_count,
                 "value": lost_value,
             },
+            "pipeline": {
+                "count": won_count,
+                "value": won_value,
+            },
         }
     }
