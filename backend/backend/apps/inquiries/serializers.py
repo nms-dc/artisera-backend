@@ -205,16 +205,10 @@ class InquiryCreateSerializer(serializers.Serializer):
         decimal_places=2,
         min_value=Decimal("0.01"),
     )
-    categoryId = serializers.UUIDField()
-    subcategoryId = serializers.UUIDField()
-    artistId = serializers.UUIDField(
-        required=False,
-        allow_null=True,
-    )
-    rmId = serializers.UUIDField(
-        required=False,
-        allow_null=True,
-    )
+    categoryId = serializers.UUIDField(required=False, allow_null=True)
+    subcategoryId = serializers.UUIDField(required=False, allow_null=True)
+    artistId = serializers.UUIDField(required=False, allow_null=True)
+    rmId = serializers.UUIDField(required=False, allow_null=True)
     priority = serializers.ChoiceField(
         choices=Inquiry.Priority.choices,
         required=False,
@@ -243,12 +237,12 @@ class InquiryCreateSerializer(serializers.Serializer):
         return value
 
     def validate_categoryId(self, value):
-        if not Category.objects.filter(id=value).exists():
+        if value and not Category.objects.filter(id=value).exists():
             raise serializers.ValidationError("Category does not exist.")
         return value
 
     def validate_subcategoryId(self, value):
-        if not Subcategory.objects.filter(id=value).exists():
+        if value and not Subcategory.objects.filter(id=value).exists():
             raise serializers.ValidationError("Subcategory does not exist.")
         return value
 
@@ -276,8 +270,16 @@ class InquiryCreateSerializer(serializers.Serializer):
         # On PATCH, fall back to the existing inquiry's values
         instance = self.context.get("instance")
         if instance is not None:
-            category_id = category_id or instance.category_id
-            subcategory_id = subcategory_id or instance.subcategory_id
+            if "categoryId" not in attrs:
+                category_id = instance.category_id
+            if "subcategoryId" not in attrs:
+                subcategory_id = instance.subcategory_id
+
+        # A subcategory only makes sense inside a category.
+        if subcategory_id and not category_id:
+            raise serializers.ValidationError(
+                {"categoryId": ["Select a category for the subcategory."]}
+            )
 
         if category_id and subcategory_id:
             if not Subcategory.objects.filter(

@@ -218,8 +218,8 @@ class InquiryListView(APIView):
             requirement=data["requirement"],
             quantity=data["quantity"],
             value=data["value"],
-            category_id=data["categoryId"],
-            subcategory_id=data["subcategoryId"],
+            category_id=data.get("categoryId"),
+            subcategory_id=data.get("subcategoryId"),
             artist_id=data.get("artistId"),
             source=data["source"],
             priority=priority,
@@ -522,8 +522,8 @@ class InquiryDetailView(APIView):
         inquiry.requirement = data["requirement"]
         inquiry.quantity = data["quantity"]
         inquiry.value = data["value"]
-        inquiry.category_id = data["categoryId"]
-        inquiry.subcategory_id = data["subcategoryId"]
+        inquiry.category_id = data.get("categoryId")
+        inquiry.subcategory_id = data.get("subcategoryId")
         inquiry.artist_id = data.get("artistId")
         inquiry.source = data["source"]
         inquiry.priority = priority
@@ -535,39 +535,6 @@ class InquiryDetailView(APIView):
         if str(inquiry.rm_id) != str(rm_id):
             inquiry.rm_id = rm_id
             inquiry.assigned_on = timezone.now() if rm_id else None
-
-        inquiry.save()
-
-        inquiry = get_object_or_404(self._queryset(request), pk=pk)
-        return Response(InquiryListSerializer(inquiry).data)
-
-    def patch(self, request, pk):
-        user = request.user
-        inquiry = get_object_or_404(self._queryset(request), pk=pk)
-
-        serializer = InquiryCreateSerializer(
-            data=request.data,
-            partial=True,
-            context={"instance": inquiry},
-        )
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-
-        # Only the fields that were sent are changed.
-        for key, field in self.FIELD_MAP.items():
-            if key in data:
-                setattr(inquiry, field, data[key])
-
-        can_assign_rm = user.is_admin or user.can("inquiries", "assignRm")
-
-        if can_assign_rm and "priority" in data:
-            inquiry.priority = data["priority"]
-
-        if can_assign_rm and "rmId" in data:
-            new_rm = data["rmId"]
-            if str(inquiry.rm_id) != str(new_rm):
-                inquiry.rm_id = new_rm
-                inquiry.assigned_on = timezone.now() if new_rm else None
 
         inquiry.save()
 

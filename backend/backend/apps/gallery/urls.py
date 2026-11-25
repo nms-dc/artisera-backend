@@ -25,6 +25,7 @@ from .views import (
     GalleryShipmentStatusView,
     GalleryCertificateListView,
     GalleryCertificateExportView,
+    GallerySaleDetailView,
 )
 
 urlpatterns = [
@@ -125,5 +126,8 @@ urlpatterns = [
         "certificates/export/",
         GalleryCertificateExportView.as_view(),
         name="gallery-certificates-export",
+    ),
+    path(
+        "sales/<uuid:pk>/", GallerySaleDetailView.as_view(), name="gallery-sale-detail"
     ),
 ]

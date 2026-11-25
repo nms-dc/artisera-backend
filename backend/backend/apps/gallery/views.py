@@ -62,6 +62,7 @@ from .serializers import (
     ShipmentRowSerializer,
     ShipmentStatusSerializer,
     CertificateRowSerializer,
+    SaleDetailSerializer,
 )
 from rest_framework.parsers import FormParser, MultiPartParser
 from .models import Order, OrderLog, OrderMedia, OrderProduct, SaleEmailStatus, SaleLog
@@ -95,6 +96,7 @@ from .serializers import SaleProductSerializer, SaleProductUpdateSerializer
 from .services import COMMISSION_STATUS
 from rest_framework.exceptions import PermissionDenied
 from .services import notify_gallery_managers  # add to your existing .services import
+from accounts.models import RM_ROLE_ID
 
 MAX_PAGE_SIZE = 100
 
@@ -1800,3 +1802,35 @@ class GalleryCertificateExportView(GalleryCertificateListView):
                 ]
             )
         return response
+
+
+class GallerySaleDetailView(APIView):
+    """
+    GET /api/v1/gallery/sales/{id}/
+    Permission: sales.view (an RM only for their own sales)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        user = request.user
+        require_permission(user, "sales", "view")
+
+        sale = get_object_or_404(
+            Sale.objects.select_related(
+                "inquiry__customer", "inquiry__rm", "email_status"
+            ).prefetch_related(
+                "products__artist",
+                "products__order_product__order",
+                "orders__order_products__sale_product",
+                "orders__sale__inquiry__customer",
+                "orders__sale__inquiry__rm",
+            ),
+            pk=pk,
+        )
+
+        # 403 (not 404) for an RM who doesn't own the sale.
+        if user.role_id == RM_ROLE_ID and sale.inquiry.rm_id != user.id:
+            raise PermissionDenied("You do not have permission to do this.")
+
+        return Response(SaleDetailSerializer(sale).data)

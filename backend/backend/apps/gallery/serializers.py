@@ -631,3 +631,65 @@ class CertificateRowSerializer(serializers.ModelSerializer):
 
     def get_dispatched(self, obj):
         return obj.actual_dispatch_date is not None
+
+
+class SaleDetailSerializer(SaleListSerializer):
+    rmNotification = serializers.SerializerMethodField()
+    notes = serializers.SerializerMethodField()
+    shipmentPriority = serializers.CharField(source="shipment_priority", read_only=True)
+    requiredShipmentDate = serializers.DateTimeField(
+        source="required_shipment_date", read_only=True, allow_null=True
+    )
+    shipmentInstructions = serializers.SerializerMethodField()
+    paymentNotes = serializers.SerializerMethodField()
+    products = serializers.SerializerMethodField()
+    orders = serializers.SerializerMethodField()
+
+    class Meta(SaleListSerializer.Meta):
+        fields = SaleListSerializer.Meta.fields + [
+            "rmNotification",
+            "notes",
+            "shipmentPriority",
+            "requiredShipmentDate",
+            "shipmentInstructions",
+            "paymentNotes",
+            "products",
+            "orders",
+        ]
+
+    def _email(self, obj):
+        try:
+            return obj.email_status
+        except ObjectDoesNotExist:
+            return None
+
+    def get_rmNotification(self, obj):
+        email = self._email(obj)
+        if email and email.received_at:
+            email_status = "Received"
+        elif email and email.rm_email_sent_at:
+            email_status = "Sent"
+        else:
+            email_status = "Pending"
+        return {
+            "status": email_status,
+            "at": _dt(email.received_at) if email else None,
+            "sentAt": _dt(email.rm_email_sent_at) if email else None,
+            "overridden": bool(email.overridden) if email else False,
+        }
+
+    def get_notes(self, obj):
+        return obj.notes or None
+
+    def get_shipmentInstructions(self, obj):
+        return obj.shipment_instructions or None
+
+    def get_paymentNotes(self, obj):
+        return obj.payment_notes or None
+
+    def get_products(self, obj):
+        return SaleProductSerializer(obj.products.all(), many=True).data
+
+    def get_orders(self, obj):
+        orders = sorted(obj.orders.all(), key=lambda o: o.created_at, reverse=True)
+        return OrderListSerializer(orders, many=True).data
