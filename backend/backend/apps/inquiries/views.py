@@ -17,6 +17,8 @@ from .serializers import (
     InquiryBulkSerializer,
     InquiryStatusSerializer,
     InquiryTouchbaseSerializer,
+    InquiryInteractionSerializer,
+    InquirySnoozeSerializer,
 )
 from inquiries.models import Customer, Category, Subcategory, Artist
 from inquiries.serializers import (
@@ -28,7 +30,7 @@ from inquiries.serializers import (
 )
 from rest_framework import status
 from django.db import transaction
-from accounts.models import User
+from accounts.models import User, RM_ROLE_ID
 from .serializers import InquiryAssignSerializer  # add to your existing import list
 from .models import Inquiry, InquiryActivity, Sale, SaleProduct
 from .serializers import InquiryWonSerializer
@@ -1621,6 +1623,297 @@ class InquiryTouchbaseView(APIView):
                     "method": method,
                     "at": _iso_utc(at),
                     "nextFollowUp": _iso_utc(next_follow_up),
+                    "notes": notes,
+                },
+                created_by=user,
+            )
+
+        inquiry = (
+            Inquiry.objects.select_related(
+                "customer", "category", "subcategory", "artist", "rm"
+            )
+            .annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+            .get(pk=pk)
+        )
+        return Response(InquiryListSerializer(inquiry).data)
+
+
+_S = Inquiry.Status
+INTERACTION_MOVES = {
+    _S.TOUCHBASE_FOLLOWUP.value: {
+        _S.ACTIVE_CONVERSATIONS.value,
+        _S.NURTURE.value,
+        _S.LOST.value,
+    },
+    _S.ACTIVE_CONVERSATIONS.value: {
+        _S.NURTURE.value,
+        _S.WON.value,
+        _S.LOST.value,
+    },
+}
+
+
+class InquiryInteractionView(APIView):
+    """
+    POST /api/v1/crm/inquiries/{id}/interactions/
+    Body: method*, at*, nextFollowUp, notes, moveTo
+    Records a follow-up or conversation; optionally moves the status.
+    Permission: the inquiry's own RM.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+
+        serializer = InquiryInteractionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        method = data["method"]
+        at = data["at"].astimezone(dt_timezone.utc)
+        notes = (data.get("notes") or "").strip()
+        move_to = data.get("moveTo")
+        next_follow_up = data.get("nextFollowUp")
+
+        with transaction.atomic():
+            inquiry = get_object_or_404(Inquiry.objects.select_for_update(), pk=pk)
+
+            if inquiry.rm_id != user.id:
+                raise PermissionDenied("You do not have permission to do this.")
+
+            allowed_moves = INTERACTION_MOVES.get(inquiry.status)
+            if allowed_moves is None:
+                return Response(
+                    {
+                        "detail": "An interaction can only be recorded for an inquiry "
+                        "in Touchbase Follow-up or Active Conversations status."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if move_to and move_to not in allowed_moves:
+                return Response(
+                    {"moveTo": [f"Cannot move from {inquiry.status} to {move_to}."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            kind = (
+                "Follow-up"
+                if inquiry.status == _S.TOUCHBASE_FOLLOWUP.value
+                else "Conversation"
+            )
+            previous_status = inquiry.status
+
+            inquiry.last_contact = at
+            inquiry.next_follow_up = next_follow_up
+            if move_to:
+                inquiry.status = move_to
+            if move_to in (_S.WON.value, _S.LOST.value):
+                inquiry.closed_at = timezone.now()
+            inquiry.save()
+
+            description = f"{kind} via {method}"
+            if move_to:
+                description += f" · moved to {move_to}"
+            if notes:
+                description += f": {notes}"
+
+            InquiryActivity.objects.create(
+                inquiry=inquiry,
+                action=kind,
+                description=description[:500],
+                metadata={
+                    "method": method,
+                    "at": _iso_utc(at),
+                    "nextFollowUp": (
+                        _iso_utc(next_follow_up) if next_follow_up else None
+                    ),
+                    "notes": notes,
+                    "moveTo": move_to,
+                    "previousStatus": previous_status,
+                },
+                created_by=user,
+            )
+
+        inquiry = (
+            Inquiry.objects.select_related(
+                "customer", "category", "subcategory", "artist", "rm"
+            )
+            .annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+            .get(pk=pk)
+        )
+        return Response(InquiryListSerializer(inquiry).data)
+
+
+SNOOZABLE_STATUSES = (
+    _S.TOUCHBASE_FOLLOWUP.value,
+    _S.ACTIVE_CONVERSATIONS.value,
+)
+
+
+class InquirySnoozeView(APIView):
+    """
+    POST /api/v1/crm/inquiries/{id}/snooze/
+    Body: {"nextFollowUp": "<ISO-8601 UTC>"}
+    Pushes the next follow-up date. Permission: the inquiry's own RM.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+
+        serializer = InquirySnoozeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_follow_up = serializer.validated_data["nextFollowUp"].astimezone(
+            dt_timezone.utc
+        )
+
+        with transaction.atomic():
+            inquiry = get_object_or_404(Inquiry.objects.select_for_update(), pk=pk)
+
+            if inquiry.rm_id != user.id:
+                raise PermissionDenied(
+                    "Only the RM assigned to this inquiry can do this."
+                )
+
+            if inquiry.status not in SNOOZABLE_STATUSES:
+                return Response(
+                    {
+                        "detail": "Only an inquiry in Touchbase Follow-up or "
+                        "Active Conversations status can be snoozed."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            previous = inquiry.next_follow_up
+            inquiry.next_follow_up = new_follow_up
+            inquiry.save()
+
+            InquiryActivity.objects.create(
+                inquiry=inquiry,
+                action="snoozed",
+                description=f"Follow-up snoozed to {_iso_utc(new_follow_up)}"[:500],
+                metadata={
+                    "previousNextFollowUp": _iso_utc(previous) if previous else None,
+                    "nextFollowUp": _iso_utc(new_follow_up),
+                },
+                created_by=user,
+            )
+
+        inquiry = (
+            Inquiry.objects.select_related(
+                "customer", "category", "subcategory", "artist", "rm"
+            )
+            .annotate(
+                repeat_prospect=Exists(
+                    Inquiry.objects.filter(customer_id=OuterRef("customer_id")).exclude(
+                        pk=OuterRef("pk")
+                    )
+                )
+            )
+            .get(pk=pk)
+        )
+        return Response(InquiryListSerializer(inquiry).data)
+
+
+class InquiryStatusView(APIView):
+    """
+    POST /api/v1/crm/inquiries/{id}/status/
+    Body: status*, notes, nextFollowUp
+    Admin-type users: inquiries.edit. RM: own Nurture inquiry -> Active Conversations only.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+
+        serializer = InquiryStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        new_status = data["status"]
+        notes = (data.get("notes") or "").strip()
+        is_rm = user.role_id == RM_ROLE_ID
+
+        with transaction.atomic():
+            inquiry = get_object_or_404(Inquiry.objects.select_for_update(), pk=pk)
+
+            if is_rm:
+                if (
+                    inquiry.rm_id != user.id
+                    or inquiry.status != Inquiry.Status.NURTURE
+                    or new_status != Inquiry.Status.ACTIVE_CONVERSATIONS
+                ):
+                    raise PermissionDenied(
+                        "You can only move a Nurture inquiry back to Active Conversations."
+                    )
+                if data.get("nextFollowUp") is None:
+                    return Response(
+                        {"nextFollowUp": ["This field is required."]},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            elif not user.can("inquiries", "edit"):
+                raise PermissionDenied("You do not have permission to do this.")
+
+            if inquiry.status in (Inquiry.Status.WON, Inquiry.Status.LOST):
+                return Response(
+                    {"detail": "Inquiry is already closed."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if inquiry.status == new_status:
+                return Response(
+                    {"detail": f"Inquiry is already in {new_status} status."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            previous_status = inquiry.status
+            inquiry.status = new_status
+
+            if new_status == Inquiry.Status.ACTIVE_CONVERSATIONS:
+                if data.get("nextFollowUp"):
+                    inquiry.next_follow_up = data["nextFollowUp"]
+            else:
+                inquiry.next_follow_up = None  # Won / Lost / Nurture
+
+            if new_status in (Inquiry.Status.WON, Inquiry.Status.LOST):
+                inquiry.closed_at = timezone.now()
+            inquiry.save()
+
+            if new_status == Inquiry.Status.WON:
+                customer = inquiry.customer
+                fields = []
+                if customer.customer_type != "Customer":
+                    customer.customer_type = "Customer"
+                    fields.append("customer_type")
+                if customer.customer_since is None:
+                    customer.customer_since = timezone.now()
+                    fields.append("customer_since")
+                if fields:
+                    customer.save(update_fields=fields + ["updated_at"])
+
+            description = f"Status changed from {previous_status} to {new_status}"
+            if notes:
+                description += f": {notes}"
+            InquiryActivity.objects.create(
+                inquiry=inquiry,
+                action="status_changed",
+                description=description[:500],
+                metadata={
+                    "previousStatus": previous_status,
+                    "status": new_status,
                     "notes": notes,
                 },
                 created_by=user,

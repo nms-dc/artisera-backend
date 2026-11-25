@@ -18,6 +18,8 @@ from .views import (
     InquiryWonView,
     CustomerSalesView,
     InquiryTouchbaseView,
+    InquiryInteractionView,
+    InquirySnoozeView,
 )
 
 urlpatterns = [
@@ -114,5 +116,15 @@ urlpatterns = [
         "crm/inquiries/<uuid:pk>/touchbase/",
         InquiryTouchbaseView.as_view(),
         name="inquiry-touchbase",
+    ),
+    path(
+        "crm/inquiries/<uuid:pk>/interactions/",
+        InquiryInteractionView.as_view(),
+        name="inquiry-interactions",
+    ),
+    path(
+        "crm/inquiries/<uuid:pk>/snooze/",
+        InquirySnoozeView.as_view(),
+        name="inquiry-snooze",
     ),
 ]

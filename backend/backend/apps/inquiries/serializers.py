@@ -143,38 +143,54 @@ class InquiryListSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return None
 
+        # Imported here so inquiries doesn't depend on gallery at load time.
+        from gallery.services import derive_status
+
         dt = serializers.DateTimeField()
 
         def _dt(value):
             return dt.to_representation(value) if value else None
 
+        products = list(sale.products.all())
+        orders = list(sale.orders.all())  # reverse relation from gallery.Order
+
+        total_products = sum(p.quantity for p in products)
+        ordered_ids = {
+            op.sale_product_id for o in orders for op in o.order_products.all()
+        }
+        remaining = sum(p.quantity for p in products if p.id not in ordered_ids)
+
+        try:
+            email = sale.email_status
+        except ObjectDoesNotExist:
+            email = None
+
+        if email and email.received_at:
+            email_status = "Received"
+        elif email and email.rm_email_sent_at:
+            email_status = "Sent"
+        else:
+            email_status = "Pending"
+
         return {
             "id": str(sale.id),
-            "code": sale.code,
-            "totalValue": float(sale.total_value),
+            "saleNumber": sale.code,
             "saleDate": _dt(sale.sale_date),
-            "certificatePlan": sale.certificate_plan,
-            "products": [
-                {
-                    "id": str(p.id),
-                    "name": p.name,
-                    "artistId": str(p.artist_id) if p.artist_id else None,
-                    "url": p.url,
-                    "listedPrice": float(p.listed_price),
-                    "quantity": p.quantity,
-                    "productStatus": p.product_status,
-                    "commissionReadyDate": _dt(p.commission_ready_date),
-                    "orderNotes": p.order_notes,
-                }
-                for p in sale.products.all()
-            ],
-            "shipmentPriority": sale.shipment_priority,
-            "requiredShipmentDate": _dt(sale.required_shipment_date),
-            "shipmentInstructions": sale.shipment_instructions,
+            "totalValue": float(sale.total_value),
             "paymentStatus": sale.payment_status,
-            "paymentNotes": sale.payment_notes,
-            "notes": sale.notes,
-            "createdAt": _dt(sale.created_at),
+            "totalProducts": total_products,
+            "productsRemaining": remaining,
+            "totalOrders": len(orders),
+            "orders": [
+                {
+                    "id": str(o.id),
+                    "orderNumber": o.order_number,
+                    "status": derive_status(o),
+                }
+                for o in orders
+            ],
+            "emailStatus": email_status,
+            "emailSentAt": _dt(email.rm_email_sent_at) if email else None,
         }
 
 
@@ -810,4 +826,75 @@ class InquiryTouchbaseSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "The date and time cannot be in the future."
             )
+        return value
+
+
+_PARKED_OR_CLOSED = (
+    Inquiry.Status.NURTURE.value,
+    Inquiry.Status.WON.value,
+    Inquiry.Status.LOST.value,
+)
+
+
+class InquiryInteractionSerializer(serializers.Serializer):
+    method = serializers.CharField(max_length=50)
+    at = serializers.DateTimeField()
+    nextFollowUp = serializers.DateTimeField(required=False, allow_null=True)
+    notes = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+    moveTo = serializers.ChoiceField(
+        choices=[
+            Inquiry.Status.ACTIVE_CONVERSATIONS.value,
+            *_PARKED_OR_CLOSED,
+        ],
+        required=False,
+    )
+
+    def validate_at(self, value):
+        if value > timezone.now():
+            raise serializers.ValidationError(
+                "The date and time cannot be in the future."
+            )
+        return value
+
+    def validate(self, attrs):
+        if attrs.get("moveTo") in _PARKED_OR_CLOSED:
+            attrs["nextFollowUp"] = None  # omitted by design for Nurture/Won/Lost
+            return attrs
+
+        value = attrs.get("nextFollowUp")
+        if value is None:
+            raise serializers.ValidationError(
+                {"nextFollowUp": ["This field is required."]}
+            )
+        if value <= timezone.now():
+            raise serializers.ValidationError(
+                {"nextFollowUp": ["This must be a future date and time."]}
+            )
+        return attrs
+
+
+class InquirySnoozeSerializer(serializers.Serializer):
+    nextFollowUp = serializers.DateTimeField()
+
+    def validate_nextFollowUp(self, value):
+        if value <= timezone.now():
+            raise serializers.ValidationError("Choose a date in the future.")
+        return value
+
+
+class InquiryStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(
+        choices=[
+            Inquiry.Status.WON.value,
+            Inquiry.Status.LOST.value,
+            Inquiry.Status.NURTURE.value,
+            Inquiry.Status.ACTIVE_CONVERSATIONS.value,
+        ]
+    )
+    notes = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    nextFollowUp = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate_nextFollowUp(self, value):
+        if value and value <= timezone.now():
+            raise serializers.ValidationError("Choose a date in the future.")
         return value
