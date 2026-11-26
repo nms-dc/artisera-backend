@@ -8,6 +8,7 @@ from accounts.api.views import (
     RoleListView,
     RoleDetailView,
     LogoutView,
+    ChangePasswordView,
 )
 
 urlpatterns = [
@@ -27,6 +28,7 @@ urlpatterns = [
         name="role-detail",
     ),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
+    path("auth/change-password/", ChangePasswordView.as_view(), name="change-password"),
 ]
 
 

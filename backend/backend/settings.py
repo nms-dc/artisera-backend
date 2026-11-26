@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from corsheaders.defaults import default_headers
 from datetime import timedelta
+from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(os.path.join(BASE_DIR, "backend/apps/"))
@@ -182,9 +183,13 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_THROTTLE_RATES": {
+        "change_password_ip": "20/hour",
+        "change_password_email": "5/hour",
+    },
 }
-from datetime import timedelta
 
+DEFAULT_USER_PASSWORD = os.environ.get("DEFAULT_USER_PASSWORD", "Password@123")
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(days=36500),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=36500),

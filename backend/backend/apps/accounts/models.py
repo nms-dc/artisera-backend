@@ -158,6 +158,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True)
+    must_change_password = models.BooleanField(default=False)
 
     objects = UserManager()
 
