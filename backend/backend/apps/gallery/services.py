@@ -123,6 +123,15 @@ def can_access_order(user, order):
 
 
 # Starting lists; the spec only shows "Tube" and "DHL". Edit here to change them.
-PACKAGING_TYPES = ["Tube", "Box", "Crate", "Envelope", "Pallet", "Other"]
-COURIERS = ["DHL", "FedEx", "UPS", "Blue Dart", "DTDC", "India Post", "Other"]
+PACKAGING_TYPES = [
+    "Tube",
+    "Cardboard Box",
+    "Crate (Wooden)",
+    "Box",
+    "Crate",
+    "Envelope",
+    "Pallet",
+    "Other",
+]
+COURIERS = ["DHL", "FedEx", "UPS", "BlueDart", "DTDC", "India Post", "Other"]
 SHIPMENT_STATUSES = ("In Transit", "Delivered")

@@ -17,7 +17,7 @@ import os
 
 # Starting lists; the spec only shows "Tube" and "DHL". Edit here to change them.
 PACKAGING_TYPES = ["Tube", "Box", "Crate", "Envelope", "Pallet", "Other"]
-COURIERS = ["DHL", "FedEx", "UPS", "Blue Dart", "DTDC", "India Post", "Other"]
+COURIERS = ["DHL", "FedEx", "UPS", "BlueDart", "DTDC", "India Post", "Other"]
 
 
 def _ref(user):
