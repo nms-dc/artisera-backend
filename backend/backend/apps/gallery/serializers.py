@@ -16,7 +16,17 @@ from .services import COURIERS, PACKAGING_TYPES, SHIPMENT_STATUSES
 import os
 
 # Starting lists; the spec only shows "Tube" and "DHL". Edit here to change them.
-PACKAGING_TYPES = ["Tube", "Box", "Crate", "Envelope", "Pallet", "Other"]
+PACKAGING_TYPES = [
+    "Tube",
+    "Box",
+    "Cardboard Box",
+    "Crate",
+    "Crate (Wooden)",
+    "Envelope",
+    "Pallet",
+    "Other",
+]
+
 COURIERS = ["DHL", "FedEx", "UPS", "BlueDart", "DTDC", "India Post", "Other"]
 
 
